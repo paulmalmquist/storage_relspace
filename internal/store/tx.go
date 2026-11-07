@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -68,6 +69,49 @@ type DB struct {
 	AcquireTimeout time.Duration
 	// OnAcquire, if set, observes how long each Run waited for a connection (metrics).
 	OnAcquire func(wait time.Duration, err error)
+	// MaxConnsPerApp caps the connections one app's transactions hold at once (0: no cap), so a
+	// busy app queues behind its own share instead of taking the whole pool from the others.
+	MaxConnsPerApp int
+
+	shareMu sync.Mutex
+	shares  map[string]*share
+}
+
+type share struct {
+	slots chan struct{}
+	users int
+}
+
+// takeShare reserves one of app's connection slots, waiting until ctx ends.
+func (d *DB) takeShare(ctx context.Context, app string) (func(), error) {
+	if d.MaxConnsPerApp <= 0 || app == "" {
+		return func() {}, nil
+	}
+	d.shareMu.Lock()
+	if d.shares == nil {
+		d.shares = map[string]*share{}
+	}
+	sh := d.shares[app]
+	if sh == nil {
+		sh = &share{slots: make(chan struct{}, d.MaxConnsPerApp)}
+		d.shares[app] = sh
+	}
+	sh.users++
+	d.shareMu.Unlock()
+	leave := func() {
+		d.shareMu.Lock()
+		if sh.users--; sh.users == 0 {
+			delete(d.shares, app)
+		}
+		d.shareMu.Unlock()
+	}
+	select {
+	case sh.slots <- struct{}{}:
+		return func() { <-sh.slots; leave() }, nil
+	case <-ctx.Done():
+		leave()
+		return nil, ctx.Err()
+	}
 }
 
 // NewDB wraps a runtime pool.
@@ -100,7 +144,16 @@ func (d *DB) Run(ctx context.Context, s Scope, fn func(tx pgx.Tx) error) (err er
 	}
 	actx, cancel := context.WithTimeout(ctx, d.AcquireTimeout)
 	start := time.Now()
-	conn, err := d.pool.Acquire(actx)
+	release, err := d.takeShare(actx, s.App)
+	var conn *pgxpool.Conn
+	if err == nil {
+		conn, err = d.pool.Acquire(actx)
+		if err != nil {
+			release()
+		} else {
+			defer release()
+		}
+	}
 	cancel()
 	if d.OnAcquire != nil {
 		d.OnAcquire(time.Since(start), err)

@@ -417,3 +417,30 @@ func TestPoolExhaustionFailsFast(t *testing.T) {
 		t.Fatalf("waited %v: %v", time.Since(start), err)
 	}
 }
+
+// One app cannot hold more than its share of the pool; another app still gets a connection.
+func TestPerAppConnectionShare(t *testing.T) {
+	f := setup(t)
+	pool, err := store.Open(f.ctx, f.db.RuntimeURL, store.Options{Schema: f.db.Schema, MaxConns: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	db := store.NewDB(pool)
+	db.AcquireTimeout, db.MaxConnsPerApp = 200*time.Millisecond, 2
+	hold, release := make(chan struct{}, 2), make(chan struct{})
+	for range 2 {
+		go func() {
+			_ = db.Run(f.ctx, scope("notes:test", "alice"), func(pgx.Tx) error { hold <- struct{}{}; <-release; return nil })
+		}()
+	}
+	<-hold
+	<-hold
+	defer close(release)
+	if err := db.Run(f.ctx, scope("notes:test", "alice"), func(pgx.Tx) error { return nil }); !errs.Is(err, "unavailable") {
+		t.Fatalf("third transaction for the busy app: %v", err)
+	}
+	if err := db.Run(f.ctx, scope("tasks:test", "alice"), func(pgx.Tx) error { return nil }); err != nil {
+		t.Fatalf("another app was starved: %v", err)
+	}
+}

@@ -28,6 +28,7 @@ type Config struct {
 	MigrationDatabaseURL  string
 	DBSchema              string
 	DBMaxConns            int32
+	DBMaxConnsPerApp      int // 0: half the pool
 	DBStatementTimeout    time.Duration
 	AllowPrivilegedDBRole bool // development only: let serve run with a login that fails the role check
 
@@ -182,6 +183,7 @@ func FromLookup(lookup func(string) (string, bool)) (*Config, error) {
 		MigrationDatabaseURL:       r.str("MIGRATION_DATABASE_URL", ""),
 		DBSchema:                   r.str("DB_SCHEMA", "strongbox"),
 		DBMaxConns:                 int32(r.integer("DB_MAX_CONNS", 10)),
+		DBMaxConnsPerApp:           int(r.integer("DB_MAX_CONNS_PER_APP", 0)),
 		DBStatementTimeout:         time.Duration(r.integer("DB_STATEMENT_TIMEOUT_MS", 15000)) * time.Millisecond,
 		AllowPrivilegedDBRole:      r.boolean("ALLOW_PRIVILEGED_DB_ROLE", false),
 		AppEnv:                     r.str("APP_ENV", ""),

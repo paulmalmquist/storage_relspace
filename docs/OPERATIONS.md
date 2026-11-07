@@ -63,6 +63,7 @@ migration identity does not have by default: run it as an operator identity gran
 | Setting | Default | Notes |
 |---|---|---|
 | `STRONGBOX_DB_MAX_CONNS` (Terraform `db_pool_size`) | 10 | Per instance. `api_max_instances × db_pool_size + 10` must not exceed Cloud SQL `max_connections`; Terraform checks this. |
+| `STRONGBOX_DB_MAX_CONNS_PER_APP` | half the pool | Connections one app's transactions may hold at once, so a busy app queues behind its own share ([LOAD.md](evidence/LOAD.md) shows why). |
 | `STRONGBOX_DB_ACQUIRE_TIMEOUT_MS` | 3000 | A request that waits longer for a connection gets `503` with `Retry-After`, instead of queueing. |
 | `STRONGBOX_DB_STATEMENT_TIMEOUT_MS` | 15000 | Per statement (also `idle_in_transaction_session_timeout`). |
 | `STRONGBOX_REQUEST_TIMEOUT_MS` | 30000 | Non-streaming requests. Uploads, downloads and parts are bounded by Cloud Run's request timeout (300 s in Terraform). |

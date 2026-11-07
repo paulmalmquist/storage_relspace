@@ -1,0 +1,139 @@
+{
+  "label": "SYNTHETIC: one host, one API process, one PostgreSQL; not a production capacity estimate",
+  "started_at": "2026-11-07T22:55:31.371419014Z",
+  "host": "linux/amd64, 2 CPUs",
+  "users": 32,
+  "duration": "15s",
+  "workloads": [
+    {
+      "name": "private-state",
+      "mode": "closed",
+      "ops": 2943,
+      "ops_per_s": 196.2,
+      "p50_ms": 159.3,
+      "p95_ms": 192.4,
+      "p99_ms": 225.4,
+      "max_ms": 336.4,
+      "errors": null,
+      "final_state": "ok: 32/32 records match their owners' successful updates"
+    },
+    {
+      "name": "shared-record",
+      "mode": "closed",
+      "ops": 4217,
+      "ops_per_s": 281.1,
+      "p50_ms": 96.7,
+      "p95_ms": 127.9,
+      "p99_ms": 1059.7,
+      "max_ms": 2090,
+      "errors": null,
+      "conflict_retries": 3908,
+      "final_state": "ok: counter 309 = successful increments, no lost update"
+    },
+    {
+      "name": "blobs",
+      "mode": "closed",
+      "ops": 2063,
+      "ops_per_s": 137.5,
+      "p50_ms": 233.9,
+      "p95_ms": 285.9,
+      "p99_ms": 312.2,
+      "max_ms": 373.5,
+      "errors": null,
+      "final_state": "ok: 2075/2075 blobs read back intact"
+    },
+    {
+      "name": "quiet-alone",
+      "mode": "closed",
+      "ops": 3331,
+      "ops_per_s": 222.1,
+      "p50_ms": 4.2,
+      "p95_ms": 8.4,
+      "p99_ms": 1005.2,
+      "max_ms": 1013.5,
+      "errors": null
+    },
+    {
+      "name": "quiet-beside-noisy",
+      "mode": "closed",
+      "ops": 2979,
+      "ops_per_s": 212.8,
+      "p50_ms": 11,
+      "p95_ms": 25.4,
+      "p99_ms": 44.4,
+      "max_ms": 1025.7,
+      "errors": null
+    }
+  ],
+  "open_loop_sweep": [
+    {
+      "name": "open-loop 50/s",
+      "mode": "open",
+      "offered_per_s": 50,
+      "ops": 500,
+      "ops_per_s": 50.1,
+      "p50_ms": 9,
+      "p95_ms": 13.2,
+      "p99_ms": 39.7,
+      "max_ms": 74.8,
+      "errors": null,
+      "final_state": "ok: 500 records = successful creates"
+    },
+    {
+      "name": "open-loop 100/s",
+      "mode": "open",
+      "offered_per_s": 100,
+      "ops": 1000,
+      "ops_per_s": 100,
+      "p50_ms": 8,
+      "p95_ms": 9.6,
+      "p99_ms": 12.4,
+      "max_ms": 29,
+      "errors": null,
+      "final_state": "ok: 1000 records = successful creates"
+    },
+    {
+      "name": "open-loop 200/s",
+      "mode": "open",
+      "offered_per_s": 200,
+      "ops": 2000,
+      "ops_per_s": 199.9,
+      "p50_ms": 8.3,
+      "p95_ms": 19.8,
+      "p99_ms": 43.5,
+      "max_ms": 81.9,
+      "errors": null,
+      "final_state": "ok: 2000 records = successful creates"
+    },
+    {
+      "name": "open-loop 400/s",
+      "mode": "open",
+      "offered_per_s": 400,
+      "ops": 4000,
+      "ops_per_s": 285.3,
+      "p50_ms": 3344.1,
+      "p95_ms": 4374.3,
+      "p99_ms": 4458.6,
+      "max_ms": 4582.7,
+      "errors": {
+        "429 rate_limited": 1323
+      },
+      "final_state": "ok: 2677 records = successful creates"
+    },
+    {
+      "name": "open-loop 800/s",
+      "mode": "open",
+      "offered_per_s": 800,
+      "ops": 8000,
+      "ops_per_s": 561.5,
+      "p50_ms": 4066.9,
+      "p95_ms": 4365.1,
+      "p99_ms": 4606,
+      "max_ms": 4934.4,
+      "errors": {
+        "429 rate_limited": 5578
+      },
+      "final_state": "ok: 2422 records = successful creates"
+    }
+  ]
+}

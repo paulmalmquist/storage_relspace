@@ -89,6 +89,10 @@ func Build(ctx context.Context, cfg *config.Config, o Overrides) (*Container, er
 	}
 	db := store.NewDB(pool)
 	db.AcquireTimeout = cfg.DBAcquireTimeout
+	db.MaxConnsPerApp = cfg.DBMaxConnsPerApp
+	if db.MaxConnsPerApp == 0 {
+		db.MaxConnsPerApp = max(1, int(pool.Config().MaxConns)/2)
+	}
 	db.OnAcquire = func(wait time.Duration, err error) {
 		outcome := "ok"
 		if err != nil {
