@@ -176,3 +176,21 @@ func TestSpecValidation(t *testing.T) {
 		t.Error("llm boundary on a user accepted")
 	}
 }
+
+// "*" on both sides of a delegation must not resurrect scopes a delegation never carries.
+func TestWildcardDelegationIsConcrete(t *testing.T) {
+	both := &Principal{Subject: "u", Kind: KindUser, Scopes: NewSet("*"), CUICategories: NewSet("*")}
+	agent := &Principal{Subject: "a", Kind: KindAgent, Scopes: NewSet("*")}
+	d := both.DelegatedTo(agent)
+	for _, s := range []string{"delegate", "principals:admin"} {
+		if d.HasScope(s) {
+			t.Fatalf("delegated principal has %s", s)
+		}
+	}
+	if !d.HasScope("records:write") || d.Scopes["*"] {
+		t.Fatalf("delegated scopes %v", d.Scopes.Sorted())
+	}
+	if dec := NewPolicy(nil).Evaluate(d, PrincipalAdmin, nil); dec.Allowed || dec.Code != CodeMissingScope {
+		t.Fatalf("delegated wildcard reached principal admin: %+v", dec)
+	}
+}
