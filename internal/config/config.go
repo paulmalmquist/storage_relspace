@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -16,10 +17,24 @@ const (
 	GiB = 1024 * MiB
 )
 
+var schemaName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
+
 type Config struct {
 	Env string // dev | test | production
 
-	DatabaseURL string
+	DatabaseURL string // runtime login: member of strongbox_runtime only
+	// MigrationDatabaseURL is the privileged login (member of strongbox_owner) used by init, db and
+	// admin commands. It defaults to DatabaseURL for single-login development setups.
+	MigrationDatabaseURL  string
+	DBSchema              string
+	DBMaxConns            int32
+	DBStatementTimeout    time.Duration
+	AllowPrivilegedDBRole bool // development only: let serve run with a login that fails the role check
+
+	// AppEnv is the environment this deployment serves. Requests name an app; the environment is
+	// fixed by the deployment, never chosen by the caller.
+	AppEnv       string
+	AuditStripes int
 
 	KMSBackend       string // local | gcp
 	KMSKeyName       string
@@ -136,6 +151,13 @@ func FromLookup(lookup func(string) (string, bool)) (*Config, error) {
 	c := &Config{
 		Env:                        r.str("ENV", "dev"),
 		DatabaseURL:                r.str("DATABASE_URL", "postgres://postgres@localhost:5432/strongbox"),
+		MigrationDatabaseURL:       r.str("MIGRATION_DATABASE_URL", ""),
+		DBSchema:                   r.str("DB_SCHEMA", "strongbox"),
+		DBMaxConns:                 int32(r.integer("DB_MAX_CONNS", 10)),
+		DBStatementTimeout:         time.Duration(r.integer("DB_STATEMENT_TIMEOUT_MS", 15000)) * time.Millisecond,
+		AllowPrivilegedDBRole:      r.boolean("ALLOW_PRIVILEGED_DB_ROLE", false),
+		AppEnv:                     r.str("APP_ENV", ""),
+		AuditStripes:               int(r.integer("AUDIT_STRIPES", 4)),
 		KMSBackend:                 r.str("KMS_BACKEND", "local"),
 		KMSKeyName:                 r.str("KMS_KEY_NAME", ""),
 		LocalKeyringPath:           r.str("LOCAL_KEYRING_PATH", ".strongbox/keyring.json"),
@@ -174,6 +196,14 @@ func FromLookup(lookup func(string) (string, bool)) (*Config, error) {
 	if c.DatabaseURL, deprecated = normalizeDBURL(c.DatabaseURL); deprecated {
 		c.Deprecations = append(c.Deprecations, "STRONGBOX_DATABASE_URL uses a driver-qualified scheme "+
 			"(postgresql+psycopg://); use postgres:// instead. Support for the old form will be removed.")
+	}
+	if c.MigrationDatabaseURL == "" {
+		c.MigrationDatabaseURL = c.DatabaseURL
+	} else {
+		c.MigrationDatabaseURL, _ = normalizeDBURL(c.MigrationDatabaseURL)
+	}
+	if c.AppEnv == "" {
+		c.AppEnv = map[string]string{"dev": "dev", "test": "test", "production": "prod"}[c.Env]
 	}
 	if err := c.Validate(); err != nil {
 		return nil, err
@@ -223,6 +253,18 @@ func (c *Config) Validate() error {
 	if !strings.HasPrefix(c.DatabaseURL, "postgres://") && !strings.HasPrefix(c.DatabaseURL, "postgresql://") {
 		add("database_url must be a postgres:// URL")
 	}
+	if !oneOf(c.AppEnv, "dev", "test", "staging", "prod") {
+		add("app_env must be dev, test, staging or prod")
+	}
+	if !schemaName.MatchString(c.DBSchema) {
+		add("db_schema must match %s", schemaName)
+	}
+	if c.DBMaxConns < 2 || c.DBMaxConns > 200 {
+		add("db_max_conns must be between 2 and 200")
+	}
+	if c.AuditStripes < 1 || c.AuditStripes > 64 {
+		add("audit_stripes must be between 1 and 64")
+	}
 	if c.KMSBackend == "gcp" && c.KMSKeyName == "" {
 		add("STRONGBOX_KMS_KEY_NAME is required when kms_backend=gcp")
 	}
@@ -254,6 +296,12 @@ func (c *Config) Validate() error {
 		}
 		if c.ExposeDocs {
 			add("expose_docs=true")
+		}
+		if c.AllowPrivilegedDBRole {
+			add("allow_privileged_db_role=true")
+		}
+		if c.AppEnv == "dev" || c.AppEnv == "test" {
+			add("app_env=%s", c.AppEnv)
 		}
 		if len(problems) > 0 {
 			return fmt.Errorf("refusing to start in production: %s", strings.Join(problems, "; "))
