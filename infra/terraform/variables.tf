@@ -31,7 +31,7 @@ variable "bucket_name" {
 }
 
 variable "api_image" {
-  description = "Strongbox image built from a FIPS-validated base (see SECURITY.md), in an Artifact Registry repo inside the boundary."
+  description = "Strongbox image built from this repo's Dockerfile (Go FIPS 140-3 module via GOFIPS140), pushed to an Artifact Registry repo inside the boundary."
   type        = string
 }
 

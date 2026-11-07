@@ -51,11 +51,13 @@ strongbox mcp
 
 **streamable HTTP** (shared server): each MCP client sends the user's bearer token. The server verifies it
 (issuer, audience from `STRONGBOX_DELEGATION_AUDIENCES`), then calls the API with its own Google ID token
-plus `X-On-Behalf-Of: <user token>`. Set `STRONGBOX_MCP_PUBLIC_URL` to the URL clients use and
-`STRONGBOX_MCP_ALLOWED_HOSTS` to enable DNS-rebinding protection.
+plus `X-On-Behalf-Of: <user token>`. Set `STRONGBOX_MCP_PUBLIC_URL` to the URL clients use; it is
+published as OAuth protected-resource metadata at `/.well-known/oauth-protected-resource`, and
+unauthenticated requests get a `401` pointing there. The server runs stateless (no MCP sessions), so it
+scales horizontally on Cloud Run.
 
 ```bash
-strongbox mcp --transport streamable-http --host 0.0.0.0 --port 8080
+strongbox mcp -transport streamable-http -addr :8080
 ```
 
 ## Example session

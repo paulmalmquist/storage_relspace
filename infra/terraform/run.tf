@@ -29,7 +29,7 @@ resource "google_cloud_run_v2_service" "api" {
     containers {
       name       = "api"
       image      = var.api_image
-      args       = ["serve", "--port", "8080"]
+      args       = ["serve", "--addr", ":8080"]
       depends_on = ["cloud-sql-proxy"]
 
       ports {
@@ -123,7 +123,7 @@ resource "google_cloud_run_v2_job" "migrate" {
 
       containers {
         image = var.api_image
-        args  = ["init", "--wait", "120", "--shutdown-url", "http://127.0.0.1:9091/quitquitquit"]
+        args  = ["init", "--wait", "120s", "--shutdown-url", "http://127.0.0.1:9091/quitquitquit"]
 
         dynamic "env" {
           for_each = local.common_env
@@ -168,7 +168,7 @@ resource "google_cloud_run_v2_service" "mcp" {
 
     containers {
       image = var.api_image
-      args  = ["mcp", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8080"]
+      args  = ["mcp", "--transport", "streamable-http", "--addr", ":8080"]
 
       ports {
         container_port = 8080

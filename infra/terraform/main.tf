@@ -8,7 +8,7 @@ locals {
     STRONGBOX_KMS_KEY_NAME         = google_kms_crypto_key.data_kek.id
     STRONGBOX_BLOB_BACKEND         = "gcs"
     STRONGBOX_GCS_BUCKET           = google_storage_bucket.blobs.name
-    STRONGBOX_DATABASE_URL         = "postgresql+psycopg://${local.api_db_user}@127.0.0.1:5432/strongbox"
+    STRONGBOX_DATABASE_URL         = "postgres://${local.api_db_user}@127.0.0.1:5432/strongbox?sslmode=disable"
     STRONGBOX_JWT_AUDIENCES        = jsonencode([var.api_audience])
     STRONGBOX_DELEGATION_AUDIENCES = jsonencode([var.api_audience, var.mcp_audience])
     STRONGBOX_REQUIRE_FIPS         = "true"
