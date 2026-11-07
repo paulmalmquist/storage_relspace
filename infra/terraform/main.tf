@@ -74,12 +74,12 @@ resource "google_project_iam_audit_config" "data_access" {
 }
 
 # Locked log bucket: an independent, retained copy of Strongbox's hash-chained audit events.
+# retention_days is ~7 years; set it to your records schedule. Flip `locked` to true once
+# retention is confirmed: locking is irreversible.
 resource "google_logging_project_bucket_config" "audit" {
   project        = var.project_id
   location       = var.region
   bucket_id      = "${var.name}-audit"
-  # ~7 years; set to your records schedule. Flip `locked` to true once retention is
-  # confirmed: locking is irreversible.
   retention_days = 2555
   locked         = false
 }
