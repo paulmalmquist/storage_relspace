@@ -151,6 +151,39 @@ subjects, resource IDs or markings.
 Suggested alerts: any `integrity_violation`; `strongbox.outbox.dead > 0`; audit backlog growing for
 15 minutes; `unavailable` above 1% of requests; `audit-verify` failing.
 
+## Inventory, export and restore
+
+```bash
+strongbox inventory                                  # every app: usage, collections, contract versions, pending work
+strongbox usage -app notes:prod -recount             # counters against a full scan; -fix rewrites drifted counters
+strongbox export -app notes:prod -out /secure/notes-2026-11-07
+strongbox validate-export -in /secure/notes-2026-11-07   # offline: digests, row counts, every blob's objects
+```
+
+An export (format version 1, see `internal/backup`) holds one app's rows, read from one database
+snapshot, and its encrypted objects, with SHA-256 digests in `manifest.json`. It is ciphertext: it
+can only be read with the KMS key versions listed in `kek_ids`, and only under the same app
+identity, because the app is bound into every encryption context. Treat it as CUI anyway (it
+carries markings, filenames' ciphertext, membership and audit history) and store it in a
+CUI-approved location.
+
+Restore runs with the **target's** configuration (database, bucket, KMS):
+
+```bash
+strongbox init                                       # target at the build's schema version
+strongbox restore -in /secure/notes-2026-11-07 -dry-run   # every row inserted and checked, then rolled back
+strongbox restore -in /secure/notes-2026-11-07 -deep      # restore, then decrypt everything and verify chains and usage
+```
+
+Restore refuses a target that is the export's source database and schema, one that already has the
+app, and one at an older schema than the export. It validates the export first and refuses a
+mismatch. Objects are copied before rows are committed, so a failure leaves unreferenced objects in
+the target, never rows that point at missing objects. Principals the app references are added only
+if the target lacks them; the target's existing principals are not changed.
+
+Restoring under a different app ID (a clone) is not supported: every ciphertext would have to be
+re-sealed under the new app's contexts, which is a separate operation from restore.
+
 ## Audit
 
 `strongbox audit-verify [-app APP]` (migration login) checks every hash chain. A failure names the

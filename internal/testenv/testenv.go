@@ -59,17 +59,31 @@ type Env struct {
 	*pgtest.DB
 	C       *service.Container
 	BlobDir string
+	Keyring string
 }
 
 // New returns a fresh environment or skips the test when no database is configured.
 func New(t testing.TB) *Env {
 	t.Helper()
+	return build(t, "", true)
+}
+
+// Empty returns an environment with no principals and no apps, sharing keyring (a restore
+// target that holds the same keys as the source).
+func Empty(t testing.TB, keyring string) *Env {
+	t.Helper()
+	return build(t, keyring, false)
+}
+
+func build(t testing.TB, keyring string, seed bool) *Env {
 	db := pgtest.NewDB(t)
 	ctx := context.Background()
 	dir := t.TempDir()
-	keyring := filepath.Join(dir, "keyring.json")
-	if _, err := crypto.CreateLocalKeyring(keyring); err != nil {
-		t.Fatal(err)
+	if keyring == "" {
+		keyring = filepath.Join(dir, "keyring.json")
+		if _, err := crypto.CreateLocalKeyring(keyring); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cfg, err := config.FromMap(map[string]string{
 		"STRONGBOX_ENV": "test", "STRONGBOX_DEV_JWT_SECRET": Secret, "STRONGBOX_LOCAL_KEYRING_PATH": keyring,
@@ -85,12 +99,15 @@ func New(t testing.TB) *Env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	e := &Env{DB: db, C: c, BlobDir: cfg.BlobLocalPath, Keyring: keyring}
+	if !seed {
+		return e
+	}
 	for _, p := range Principals {
 		if err := c.Principals.Put(ctx, p); err != nil {
 			t.Fatal(err)
 		}
 	}
-	e := &Env{DB: db, C: c, BlobDir: cfg.BlobLocalPath}
 	// App provisioning is a privileged operation (strongbox admin app create): done as the owner role.
 	e.Admin(t, `INSERT INTO apps (app, created_by) VALUES ($1, 'test'), ($2, 'test')`, App, Other)
 	for s, role := range Members {
