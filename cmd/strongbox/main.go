@@ -41,6 +41,7 @@ import (
 	"github.com/paulmalmquist/storage_relspace/internal/mcpserver"
 	"github.com/paulmalmquist/storage_relspace/internal/service"
 	"github.com/paulmalmquist/storage_relspace/internal/store"
+	"github.com/paulmalmquist/storage_relspace/internal/telemetry"
 	"github.com/paulmalmquist/storage_relspace/pkg/client"
 )
 
@@ -56,7 +57,7 @@ var commands = map[string]func(context.Context, []string) error{}
 func main() {
 	for k, v := range map[string]func(context.Context, []string) error{
 		"init": cmdInit, "db": cmdDB, "serve": cmdServe, "worker": cmdWorker, "mcp": cmdMCP, "admin": cmdAdmin,
-		"principal": cmdPrincipal, "token": cmdToken, "audit-verify": cmdAuditVerify, "fips-check": cmdFIPS,
+		"principal": cmdPrincipal, "token": cmdToken, "usage": cmdUsage, "audit-verify": cmdAuditVerify, "fips-check": cmdFIPS,
 		"keyring": cmdKeyring, "gc": cmdGC,
 		"openapi": func(context.Context, []string) error { _, err := os.Stdout.Write(api.OpenAPI); return err },
 		"version": func(context.Context, []string) error { fmt.Println(version); return nil },
@@ -321,6 +322,32 @@ func runtimeContainer(ctx context.Context, cfg *config.Config) (*service.Contain
 	return c, nil
 }
 
+// metrics installs the OpenTelemetry provider for a runtime process. Shutdown flushes on exit.
+func metrics(ctx context.Context, cfg *config.Config, c *service.Container, name string) func() {
+	shutdown, err := telemetry.Setup(ctx, cfg.MetricsExporter, name, version, telemetry.Gauges{
+		Pool: func() (int64, int64, int64, int64) {
+			st := c.DB.Stat()
+			return int64(st.AcquiredConns()), int64(st.IdleConns()), int64(st.TotalConns()), int64(st.MaxConns())
+		},
+		OutboxLag:    func() time.Duration { return c.Worker.LastStats().OldestPendingJob },
+		AuditBacklog: func() int64 { return c.Worker.LastStats().AuditUndelivered },
+		DeadJobs:     func() int64 { return c.Worker.LastStats().DeadJobs },
+		CacheStats: func() (int64, int64) {
+			_, hits, misses, _ := c.Keys.CacheStats()
+			return hits, misses
+		},
+	})
+	if err != nil {
+		slog.Error("metrics disabled", "exporter", cfg.MetricsExporter, "error", err)
+		return func() {}
+	}
+	return func() {
+		flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdown(flush)
+	}
+}
+
 func cmdServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr(), "listen address")
@@ -335,6 +362,7 @@ func cmdServe(ctx context.Context, args []string) error {
 		return err
 	}
 	defer c.Pool.Close()
+	defer metrics(ctx, cfg, c, "strongbox-api")()
 	if *worker {
 		go c.Worker.Run(ctx)
 	}
@@ -356,6 +384,7 @@ func cmdWorker(ctx context.Context, args []string) error {
 		return err
 	}
 	defer c.Pool.Close()
+	defer metrics(ctx, cfg, c, "strongbox-worker")()
 	if *once {
 		stats, err := c.Worker.RunOnce(ctx)
 		_ = json.NewEncoder(os.Stdout).Encode(stats)
@@ -450,7 +479,8 @@ const adminUsage = `usage:
   strongbox admin client add|remove APP SUBJECT                  workloads that may act for members
   strongbox admin member set APP SUBJECT ROLE                    recovery: viewer|member|editor|admin
   strongbox admin legacy-assign -app APP [-dry-run] [-verify]    move pre-app-scoping rows into APP
-  strongbox admin transfer-owner -app APP -kind record|blob -id ID -to SUBJECT`
+  strongbox admin transfer-owner -app APP -kind record|blob -id ID -to SUBJECT
+  strongbox admin quota set APP [-max-blob-bytes N] [-max-blobs N] [-max-records N] [-max-record-bytes N]   (omitted: unlimited)`
 
 func cmdAdmin(ctx context.Context, args []string) error {
 	if len(args) == 0 {
@@ -523,6 +553,22 @@ func cmdAdmin(ctx context.Context, args []string) error {
 		rep, err := a.AssignLegacy(ctx, service.NewKeys(kp, cfg.DataKeyRotation, cfg.DataKeyCacheTTL, 1024), *app, *dry, *verify)
 		_ = json.NewEncoder(os.Stdout).Encode(rep)
 		return err
+	case "quota":
+		if len(args) < 3 || args[1] != "set" {
+			return errors.New(adminUsage)
+		}
+		fs := flag.NewFlagSet("admin quota set", flag.ExitOnError)
+		limit := func(name, usage string) *int64 { return fs.Int64(name, -1, usage+" (-1: unlimited)") }
+		bb, nb := limit("max-blob-bytes", "blob bytes, including pending uploads"), limit("max-blobs", "blobs")
+		nr, rb := limit("max-records", "live records"), limit("max-record-bytes", "stored bytes of live records")
+		_ = fs.Parse(args[3:])
+		opt := func(v *int64) *int64 {
+			if *v < 0 {
+				return nil
+			}
+			return v
+		}
+		return a.SetQuota(ctx, args[2], admin.Quota{MaxBlobBytes: opt(bb), MaxBlobs: opt(nb), MaxRecords: opt(nr), MaxRecordBytes: opt(rb)})
 	case "transfer-owner":
 		fs := flag.NewFlagSet("admin transfer-owner", flag.ExitOnError)
 		app := fs.String("app", "", "app <app_id>:<env>")
@@ -533,6 +579,46 @@ func cmdAdmin(ctx context.Context, args []string) error {
 		return a.TransferOwner(ctx, *app, *kind, *id, *to)
 	}
 	return errors.New(adminUsage)
+}
+
+// cmdUsage reports what one app (or every app) stores, from the counters or with a full recount.
+func cmdUsage(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("usage", flag.ExitOnError)
+	app := fs.String("app", "", "one app (<app_id>:<env>); default every app")
+	recount := fs.Bool("recount", false, "also scan the tables and report counter drift")
+	fix := fs.Bool("fix", false, "rewrite drifted counters from the scan (locks records and blobs briefly)")
+	_ = fs.Parse(args)
+	cfg, err := load()
+	if err != nil {
+		return err
+	}
+	pool, err := privileged(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	a := &admin.Admin{Pool: pool, Actor: "admin-cli:" + firstNonEmpty(os.Getenv("STRONGBOX_ADMIN_ACTOR"), os.Getenv("USER"), "unknown"),
+		Stripes: cfg.AuditStripes}
+	apps := []string{*app}
+	if *app == "" {
+		if apps, err = a.Apps(ctx); err != nil {
+			return err
+		}
+	}
+	drift := false
+	enc := json.NewEncoder(os.Stdout)
+	for _, name := range apps {
+		u, err := a.AppUsage(ctx, name, *recount, *fix)
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		drift = drift || u.Drift
+		_ = enc.Encode(u)
+	}
+	if drift && !*fix {
+		return exitCode(1)
+	}
+	return nil
 }
 
 func firstNonEmpty(v ...string) string {

@@ -40,6 +40,13 @@ func maxInt(a, b int) int {
 	return b
 }
 
+// Stats returns hit, miss and eviction counts.
+func (c *LRU[V]) Stats() (hits, misses, evictions int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Hits, c.Misses, c.Evictions
+}
+
 // Get returns a live entry.
 func (c *LRU[V]) Get(key string) (V, bool) {
 	c.mu.Lock()

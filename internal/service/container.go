@@ -16,6 +16,7 @@ import (
 	"github.com/paulmalmquist/storage_relspace/internal/crypto"
 	"github.com/paulmalmquist/storage_relspace/internal/errs"
 	"github.com/paulmalmquist/storage_relspace/internal/store"
+	"github.com/paulmalmquist/storage_relspace/internal/telemetry"
 )
 
 type Container struct {
@@ -87,6 +88,15 @@ func Build(ctx context.Context, cfg *config.Config, o Overrides) (*Container, er
 		}
 	}
 	db := store.NewDB(pool)
+	db.AcquireTimeout = cfg.DBAcquireTimeout
+	db.OnAcquire = func(wait time.Duration, err error) {
+		outcome := "ok"
+		if err != nil {
+			outcome = "timeout"
+		}
+		telemetry.PoolWait.Record(context.Background(), wait.Seconds(), telemetry.Outcome("acquire", outcome))
+	}
+	kp = crypto.WithTimeout(kp, cfg.KMSTimeout)
 	keys := NewKeys(kp, cfg.DataKeyRotation, cfg.DataKeyCacheTTL, 4096)
 	auditLog := audit.New(db, cfg.AuditStripes)
 	core := &Core{DB: db, Policy: auth.NewPolicy(cfg.ExportControlledCategories), Audit: auditLog, Conceal: cfg.ConcealDenied}
@@ -95,7 +105,8 @@ func Build(ctx context.Context, cfg *config.Config, o Overrides) (*Container, er
 	records := &Records{Core: core, keys: keys, receipts: rc, authz: authz, MaxBytes: cfg.MaxRecordBytes,
 		MaxResponseBytes: 8 << 20, schemas: cache.New[*jsonschema.Schema](1024, time.Hour)}
 	blobs := &Blobs{Core: core, keys: keys, receipts: rc, authz: authz, backend: backend, kms: kp, ChunkSize: cfg.ChunkSize,
-		MaxBytes: cfg.MaxBlobBytes, MaxMetaSize: cfg.MaxBlobMetadataBytes, LeaseTTL: 2 * time.Minute}
+		MaxBytes: cfg.MaxSingleUploadBytes, MaxBlob: cfg.MaxBlobBytes, PartSize: cfg.UploadPartBytes,
+		SessionTTL: cfg.UploadSessionTTL, MaxMetaSize: cfg.MaxBlobMetadataBytes, LeaseTTL: 2 * time.Minute}
 	registry := auth.NewRegistry(pool)
 	return &Container{
 		Config: cfg, Pool: pool, DB: db, KMS: kp, Backend: backend, Keys: keys, Audit: auditLog, Core: core,
@@ -234,6 +245,12 @@ func (a *Auditing) Record(ctx context.Context, e audit.Entry) error {
 func (c *Container) Limits() map[string]any {
 	return map[string]any{
 		"max_single_upload_bytes": c.Blobs.MaxBytes,
+		"max_blob_bytes":          c.Blobs.MaxBlob,
+		"upload_session": map[string]any{
+			"part_size":           c.Blobs.PartSize,
+			"max_parts":           partCount(c.Blobs.MaxBlob, c.Blobs.PartSize),
+			"session_ttl_seconds": int(c.Blobs.SessionTTL.Seconds()),
+		},
 		"max_blob_metadata_bytes": c.Config.MaxBlobMetadataBytes,
 		"max_record_bytes":        c.Config.MaxRecordBytes,
 		"max_page":                MaxPage,

@@ -8,10 +8,11 @@ import (
 
 // Error is a domain error carried from services to the API and MCP layers.
 type Error struct {
-	Status int
-	Code   string
-	Detail string
-	cause  error
+	Status     int
+	Code       string
+	Detail     string
+	RetryAfter int // seconds; sent as Retry-After when positive
+	cause      error
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Detail }
@@ -23,6 +24,9 @@ func newf(status int, code, format string, args ...any) *Error {
 
 // Wrap attaches a cause while keeping the domain status and code.
 func (e *Error) Wrap(cause error) *Error { e.cause = cause; return e }
+
+// WithRetryAfter tells clients how many seconds to wait before retrying.
+func (e *Error) WithRetryAfter(seconds int) *Error { e.RetryAfter = seconds; return e }
 
 func Unauthenticated(f string, a ...any) *Error { return newf(401, "unauthenticated", f, a...) }
 func Forbidden(f string, a ...any) *Error       { return newf(403, "forbidden", f, a...) }

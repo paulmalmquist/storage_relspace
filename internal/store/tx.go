@@ -63,10 +63,17 @@ func (s Scope) validate() error {
 type DB struct {
 	pool          *pgxpool.Pool
 	commitTimeout time.Duration
+	// AcquireTimeout bounds the wait for a pooled connection. When the pool is exhausted for
+	// longer, Run fails fast with 503 instead of queueing until the request's deadline.
+	AcquireTimeout time.Duration
+	// OnAcquire, if set, observes how long each Run waited for a connection (metrics).
+	OnAcquire func(wait time.Duration, err error)
 }
 
 // NewDB wraps a runtime pool.
-func NewDB(pool *pgxpool.Pool) *DB { return &DB{pool: pool, commitTimeout: 10 * time.Second} }
+func NewDB(pool *pgxpool.Pool) *DB {
+	return &DB{pool: pool, commitTimeout: 10 * time.Second, AcquireTimeout: 3 * time.Second}
+}
 
 // Ping checks connectivity (readiness probes).
 func (d *DB) Ping(ctx context.Context) error { return d.pool.Ping(ctx) }
@@ -91,10 +98,16 @@ func (d *DB) Run(ctx context.Context, s Scope, fn func(tx pgx.Tx) error) (err er
 	if err := s.validate(); err != nil {
 		return err
 	}
-	conn, err := d.pool.Acquire(ctx)
+	actx, cancel := context.WithTimeout(ctx, d.AcquireTimeout)
+	start := time.Now()
+	conn, err := d.pool.Acquire(actx)
+	cancel()
+	if d.OnAcquire != nil {
+		d.OnAcquire(time.Since(start), err)
+	}
 	if err != nil {
-		if ctx.Err() != nil {
-			return errs.Unavailable("database busy: %v", ctx.Err())
+		if actx.Err() != nil || ctx.Err() != nil {
+			return errs.Unavailable("database busy; retry shortly")
 		}
 		return err
 	}

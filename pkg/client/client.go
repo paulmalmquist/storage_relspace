@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/api/idtoken"
@@ -275,16 +276,17 @@ func (c *Client) WhoAmI(ctx context.Context) (map[string]any, error) {
 // Limits are the server's request limits.
 type Limits struct {
 	MaxSingleUploadBytes int64  `json:"max_single_upload_bytes"`
+	MaxBlobBytes         int64  `json:"max_blob_bytes"`
 	MaxBlobMetadataBytes int    `json:"max_blob_metadata_bytes"`
 	MaxRecordBytes       int    `json:"max_record_bytes"`
 	MaxPage              int    `json:"max_page"`
 	ChunkSize            int    `json:"chunk_size"`
 	AppEnv               string `json:"app_env"`
-	Multipart            *struct {
-		PartSize int64 `json:"part_size"`
-		MaxParts int   `json:"max_parts"`
-		MaxBytes int64 `json:"max_bytes"`
-	} `json:"multipart,omitempty"`
+	UploadSession        struct {
+		PartSize          int64 `json:"part_size"`
+		MaxParts          int   `json:"max_parts"`
+		SessionTTLSeconds int   `json:"session_ttl_seconds"`
+	} `json:"upload_session"`
 }
 
 func (c *Client) Limits(ctx context.Context) (*Limits, error) {
@@ -470,6 +472,129 @@ func (a *App) PutBlob(ctx context.Context, data []byte, o BlobOptions) (*Blob, e
 func (a *App) PutBlobStream(ctx context.Context, r io.Reader, o BlobOptions) (*Blob, error) {
 	var out Blob
 	return &out, a.c.do(ctx, request{method: "POST", path: a.base + "/blobs", stream: r, headers: o.headers(operationID(ctx))}, &out)
+}
+
+// UploadSession is a blob being uploaded in parts.
+type UploadSession struct {
+	UploadID      string `json:"upload_id"`
+	BlobID        string `json:"blob_id"`
+	Marking       string `json:"marking"`
+	SizeBytes     int64  `json:"size_bytes"`
+	PartSize      int64  `json:"part_size"`
+	PartCount     int    `json:"part_count"`
+	ReceivedParts []int  `json:"received_parts"`
+	State         string `json:"state"`
+	ExpiresAt     string `json:"expires_at"`
+}
+
+// CreateUpload declares a blob of size bytes and reserves it against the app's quota.
+func (a *App) CreateUpload(ctx context.Context, size int64, o BlobOptions) (*UploadSession, error) {
+	marking := o.Marking
+	if marking == "" {
+		marking = "UNCONTROLLED"
+	}
+	body := map[string]any{"size_bytes": size, "marking": marking, "content_type": o.ContentType, "filename": o.Filename,
+		"metadata": o.Metadata, "visibility": o.Visibility, "team_id": o.TeamID}
+	var out UploadSession
+	return &out, a.c.do(ctx, request{method: "POST", path: a.base + "/uploads", body: jsonBody(body),
+		headers: jsonHeaders("Idempotency-Key", operationID(ctx))}, &out)
+}
+
+// GetUpload reports which parts have arrived.
+func (a *App) GetUpload(ctx context.Context, id string) (*UploadSession, error) {
+	var out UploadSession
+	return &out, a.c.do(ctx, request{method: "GET", path: a.base + "/uploads/" + url.PathEscape(id)}, &out)
+}
+
+// UploadPart sends part n (1-based). Parts are idempotent: re-sending replaces the earlier copy.
+func (a *App) UploadPart(ctx context.Context, id string, n int, data []byte) error {
+	return a.c.do(ctx, request{method: "PUT", path: fmt.Sprintf("%s/uploads/%s/parts/%d", a.base, url.PathEscape(id), n),
+		body: data, headers: map[string]string{"Content-Type": "application/octet-stream"}}, nil)
+}
+
+// CompleteUpload activates the blob once every part is present.
+func (a *App) CompleteUpload(ctx context.Context, id string) (*Blob, error) {
+	var out Blob
+	return &out, a.c.do(ctx, request{method: "POST", path: a.base + "/uploads/" + url.PathEscape(id) + "/complete",
+		headers: map[string]string{"Idempotency-Key": operationID(ctx)}}, &out)
+}
+
+// AbortUpload discards a pending session.
+func (a *App) AbortUpload(ctx context.Context, id string) error {
+	return a.c.do(ctx, request{method: "DELETE", path: a.base + "/uploads/" + url.PathEscape(id)}, nil)
+}
+
+// PutLargeBlob uploads size bytes from r through an upload session, sending up to parallel parts
+// at once (each retried on transient failures). If ctx ends, the session is left pending for
+// ResumeLargeBlob until it expires.
+func (a *App) PutLargeBlob(ctx context.Context, r io.ReaderAt, size int64, o BlobOptions, parallel int) (*Blob, error) {
+	sess, err := a.CreateUpload(WithOperationID(ctx, operationID(ctx)), size, o)
+	if err != nil {
+		return nil, err
+	}
+	return a.ResumeLargeBlob(ctx, sess.UploadID, r, parallel)
+}
+
+// ResumeLargeBlob sends the parts a session is still missing, then completes it.
+func (a *App) ResumeLargeBlob(ctx context.Context, id string, r io.ReaderAt, parallel int) (*Blob, error) {
+	sess, err := a.GetUpload(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	have := map[int]bool{}
+	for _, n := range sess.ReceivedParts {
+		have[n] = true
+	}
+	parallel = max(1, min(parallel, 8))
+	sem := make(chan struct{}, parallel)
+	errc := make(chan error, sess.PartCount)
+	var wg sync.WaitGroup
+	for n := 1; n <= sess.PartCount; n++ {
+		if have[n] {
+			continue
+		}
+		start := int64(n-1) * sess.PartSize
+		length := min(sess.PartSize, sess.SizeBytes-start)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(n int, start, length int64) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			buf := make([]byte, length)
+			if _, err := r.ReadAt(buf, start); err != nil && !(errors.Is(err, io.EOF) && int64(len(buf)) == length) {
+				errc <- fmt.Errorf("read part %d: %w", n, err)
+				return
+			}
+			if err := a.UploadPart(ctx, id, n, buf); err != nil {
+				errc <- fmt.Errorf("part %d: %w", n, err)
+			}
+		}(n, start, length)
+	}
+	wg.Wait()
+	close(errc)
+	if err := <-errc; err != nil {
+		return nil, err
+	}
+	return a.CompleteUpload(WithOperationID(ctx, "complete-"+id), id)
+}
+
+// Usage is what the app stores against its quota (nil limits are unlimited).
+type Usage struct {
+	App            string `json:"app"`
+	BlobBytes      int64  `json:"blob_bytes"`
+	Blobs          int64  `json:"blobs"`
+	ReservedBytes  int64  `json:"reserved_bytes"`
+	Records        int64  `json:"records"`
+	RecordBytes    int64  `json:"record_bytes"`
+	MaxBlobBytes   *int64 `json:"max_blob_bytes"`
+	MaxBlobs       *int64 `json:"max_blobs"`
+	MaxRecords     *int64 `json:"max_records"`
+	MaxRecordBytes *int64 `json:"max_record_bytes"`
+}
+
+func (a *App) Usage(ctx context.Context) (*Usage, error) {
+	var out Usage
+	return &out, a.c.do(ctx, request{method: "GET", path: a.base + "/usage"}, &out)
 }
 
 func (a *App) GetBlob(ctx context.Context, id string) (*Blob, error) {

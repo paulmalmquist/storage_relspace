@@ -49,10 +49,25 @@ type Config struct {
 	S3EndpointURL string
 	S3Region      string
 
-	MaxBlobBytes         int64
+	MaxBlobBytes         int64 // largest blob, through an upload session
+	MaxSingleUploadBytes int64 // largest one-request upload; below the transport's request limit
+	UploadPartBytes      int   // plaintext per upload-session part (a multiple of ChunkSize)
+	UploadSessionTTL     time.Duration
 	ChunkSize            int
 	MaxRecordBytes       int
 	MaxBlobMetadataBytes int
+
+	// Request budgets. Rate limits are per process: with N instances the cluster-wide ceiling is N
+	// times these values.
+	RateSubjectPerSecond float64 // per (app, subject); 0 disables
+	RateSubjectBurst     int
+	RateAppPerSecond     float64 // per app; 0 disables
+	RateAppBurst         int
+	MaxInFlightPerApp    int           // concurrent requests per app; 0 disables
+	DBAcquireTimeout     time.Duration // waiting for a pooled connection beyond this is 503
+	RequestTimeout       time.Duration // non-streaming requests
+	KMSTimeout           time.Duration
+	MetricsExporter      string // none | gcp (Cloud Monitoring) | stdout
 
 	DataKeyRotation time.Duration
 	DataKeyCacheTTL time.Duration
@@ -108,6 +123,19 @@ func (r *reader) integer(name string, def int64) int64 {
 		return def
 	}
 	return n
+}
+
+func (r *reader) float(name string, def float64) float64 {
+	v := r.str(name, "")
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		r.errs = append(r.errs, fmt.Sprintf("STRONGBOX_%s must be a number", name))
+		return def
+	}
+	return f
 }
 
 func (r *reader) boolean(name string, def bool) bool {
@@ -170,6 +198,18 @@ func FromLookup(lookup func(string) (string, bool)) (*Config, error) {
 		S3EndpointURL:              r.str("S3_ENDPOINT_URL", ""),
 		S3Region:                   r.str("S3_REGION", ""),
 		MaxBlobBytes:               r.integer("MAX_BLOB_BYTES", 5*GiB),
+		MaxSingleUploadBytes:       r.integer("MAX_SINGLE_UPLOAD_BYTES", 16*MiB),
+		UploadPartBytes:            int(r.integer("UPLOAD_PART_BYTES", 8*MiB)),
+		UploadSessionTTL:           time.Duration(r.integer("UPLOAD_SESSION_TTL_SECONDS", 24*3600)) * time.Second,
+		RateSubjectPerSecond:       r.float("RATE_SUBJECT_PER_SECOND", 50),
+		RateSubjectBurst:           int(r.integer("RATE_SUBJECT_BURST", 100)),
+		RateAppPerSecond:           r.float("RATE_APP_PER_SECOND", 500),
+		RateAppBurst:               int(r.integer("RATE_APP_BURST", 1000)),
+		MaxInFlightPerApp:          int(r.integer("MAX_IN_FLIGHT_PER_APP", 64)),
+		DBAcquireTimeout:           time.Duration(r.integer("DB_ACQUIRE_TIMEOUT_MS", 3000)) * time.Millisecond,
+		RequestTimeout:             time.Duration(r.integer("REQUEST_TIMEOUT_MS", 30000)) * time.Millisecond,
+		KMSTimeout:                 time.Duration(r.integer("KMS_TIMEOUT_MS", 10000)) * time.Millisecond,
+		MetricsExporter:            r.str("METRICS_EXPORTER", "none"),
 		ChunkSize:                  int(r.integer("CHUNK_SIZE", 64*KiB)),
 		MaxRecordBytes:             int(r.integer("MAX_RECORD_BYTES", 1*MiB)),
 		MaxBlobMetadataBytes:       int(r.integer("MAX_BLOB_METADATA_BYTES", 16*KiB)),
@@ -249,6 +289,31 @@ func (c *Config) Validate() error {
 	}
 	if c.ChunkSize < 4*KiB || c.ChunkSize > 4*MiB {
 		add("chunk_size must be between 4 KiB and 4 MiB")
+	}
+	// Cloud Run limits HTTP/1 request bodies to 32 MiB; stay well under it.
+	if c.MaxSingleUploadBytes < 1 || c.MaxSingleUploadBytes > 32*MiB {
+		add("max_single_upload_bytes must be between 1 byte and 32 MiB")
+	}
+	if c.ChunkSize > 0 && (c.UploadPartBytes < c.ChunkSize || c.UploadPartBytes%c.ChunkSize != 0 || int64(c.UploadPartBytes) > c.MaxSingleUploadBytes) {
+		add("upload_part_bytes must be a multiple of chunk_size and at most max_single_upload_bytes")
+	}
+	if c.MaxBlobBytes < c.MaxSingleUploadBytes {
+		add("max_blob_bytes must be at least max_single_upload_bytes")
+	}
+	if c.UploadSessionTTL < time.Minute {
+		add("upload_session_ttl_seconds must be at least 60")
+	}
+	if c.RateSubjectPerSecond < 0 || c.RateAppPerSecond < 0 || c.MaxInFlightPerApp < 0 {
+		add("rate limits must not be negative")
+	}
+	if (c.RateSubjectPerSecond > 0 && c.RateSubjectBurst < 1) || (c.RateAppPerSecond > 0 && c.RateAppBurst < 1) {
+		add("rate limit bursts must be at least 1")
+	}
+	if c.DBAcquireTimeout <= 0 || c.RequestTimeout <= 0 || c.KMSTimeout <= 0 {
+		add("timeouts must be positive")
+	}
+	if !oneOf(c.MetricsExporter, "none", "gcp", "stdout") {
+		add("metrics_exporter must be none, gcp or stdout")
 	}
 	if !strings.HasPrefix(c.DatabaseURL, "postgres://") && !strings.HasPrefix(c.DatabaseURL, "postgresql://") {
 		add("database_url must be a postgres:// URL")

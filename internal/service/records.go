@@ -961,10 +961,11 @@ func (r *Records) Query(ctx context.Context, c Ctx, coll string, filters map[str
 	return out, next, err
 }
 
-// allowedMarkings returns the markings present in the collection for which the caller passes the
-// policy for action. The set is used inside SQL, so excluded records never reach LIMIT.
+// allowedMarkings returns the markings that occur in the collection (from the marking catalog, so
+// no table scan) for which the caller passes the policy for action. The set is used inside SQL, so
+// excluded records never reach LIMIT.
 func (r *Records) allowedMarkings(ctx context.Context, tx pgx.Tx, c Ctx, col *Collection, action auth.Action) ([]string, error) {
-	rows, err := tx.Query(ctx, `SELECT DISTINCT marking FROM records WHERE app=$1 AND collection=$2 AND deleted_at IS NULL`, c.App, col.Name)
+	rows, err := tx.Query(ctx, `SELECT marking FROM marking_catalog WHERE app = $1 AND scope = $2`, c.App, "collection:"+col.Name)
 	if err != nil {
 		return nil, err
 	}

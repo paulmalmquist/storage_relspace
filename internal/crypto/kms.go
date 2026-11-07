@@ -11,12 +11,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"cloud.google.com/go/kms/apiv1/kmspb"
 	"github.com/googleapis/gax-go/v2"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/paulmalmquist/storage_relspace/internal/errs"
+	"github.com/paulmalmquist/storage_relspace/internal/telemetry"
 )
 
 // WrappedKey is a data key encrypted under a key-encryption key (KEK).
@@ -218,4 +220,57 @@ func (g *GCPKeyProvider) Unwrap(ctx context.Context, w WrappedKey, aad []byte) (
 
 func (g *GCPKeyProvider) Describe() map[string]any {
 	return map[string]any{"provider": "gcp-kms", "key": g.keyName, "production_safe": true}
+}
+
+// WithTimeout bounds every Wrap and Unwrap call, so a slow KMS fails requests with 503 instead of
+// holding them (and their database connections) until the request deadline.
+func WithTimeout(p KeyProvider, d time.Duration) KeyProvider {
+	if d <= 0 {
+		return p
+	}
+	if t, ok := p.(*timeoutProvider); ok {
+		p = t.inner
+	}
+	return &timeoutProvider{inner: p, d: d}
+}
+
+type timeoutProvider struct {
+	inner KeyProvider
+	d     time.Duration
+}
+
+func observe(op string, start time.Time, err error) {
+	outcome := "ok"
+	if err != nil {
+		outcome = "error"
+	}
+	telemetry.KMSDuration.Record(context.Background(), time.Since(start).Seconds(), telemetry.Outcome(op, outcome))
+}
+
+func (t *timeoutProvider) Wrap(ctx context.Context, key, aad []byte) (WrappedKey, error) {
+	ctx, cancel := context.WithTimeout(ctx, t.d)
+	defer cancel()
+	start := time.Now()
+	w, err := t.inner.Wrap(ctx, key, aad)
+	observe("wrap", start, err)
+	return w, err
+}
+
+func (t *timeoutProvider) Unwrap(ctx context.Context, w WrappedKey, aad []byte) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, t.d)
+	defer cancel()
+	start := time.Now()
+	k, err := t.inner.Unwrap(ctx, w, aad)
+	observe("unwrap", start, err)
+	return k, err
+}
+
+func (t *timeoutProvider) Describe() map[string]any { return t.inner.Describe() }
+
+// Unwrapped returns the provider under any wrappers (tests).
+func Unwrapped(p KeyProvider) KeyProvider {
+	if t, ok := p.(*timeoutProvider); ok {
+		return t.inner
+	}
+	return p
 }

@@ -344,3 +344,138 @@ func nullable(s string) any {
 	}
 	return s
 }
+
+// ---- quotas and usage ------------------------------------------------------------------------------
+
+// Apps lists every app, the legacy scope included.
+func (a *Admin) Apps(ctx context.Context) ([]string, error) {
+	var out []string
+	err := a.tx(ctx, "_legacy", func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT app FROM apps ORDER BY app`)
+		if err != nil {
+			return err
+		}
+		out, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		return err
+	})
+	return out, err
+}
+
+// Quota is an app's limits. nil means unlimited.
+type Quota struct {
+	MaxBlobBytes   *int64 `json:"max_blob_bytes"`
+	MaxBlobs       *int64 `json:"max_blobs"`
+	MaxRecords     *int64 `json:"max_records"`
+	MaxRecordBytes *int64 `json:"max_record_bytes"`
+}
+
+// SetQuota replaces an app's limits. Lowering a limit below current usage refuses new growth; it
+// never deletes data.
+func (a *Admin) SetQuota(ctx context.Context, app string, q Quota) error {
+	return a.tx(ctx, app, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO app_quotas (app, max_blob_bytes, max_blobs, max_records, max_record_bytes, updated_by)
+			VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (app) DO UPDATE SET max_blob_bytes = EXCLUDED.max_blob_bytes,
+			max_blobs = EXCLUDED.max_blobs, max_records = EXCLUDED.max_records, max_record_bytes = EXCLUDED.max_record_bytes,
+			updated_by = EXCLUDED.updated_by, updated_at = now()`,
+			app, q.MaxBlobBytes, q.MaxBlobs, q.MaxRecords, q.MaxRecordBytes, a.Actor); err != nil {
+			return err
+		}
+		raw, _ := json.Marshal(q)
+		var details map[string]any
+		_ = json.Unmarshal(raw, &details)
+		return a.audit(ctx, tx, app, "app.quota", "app", app, "quota set", details)
+	})
+}
+
+// Usage is an app's counted usage, and with Recount, what a full scan finds.
+type Usage struct {
+	App            string `json:"app"`
+	Quota          Quota  `json:"quota"`
+	BlobBytes      int64  `json:"blob_bytes"`
+	Blobs          int64  `json:"blobs"`
+	ReservedBytes  int64  `json:"reserved_bytes"`
+	Reservations   int64  `json:"reservations"`
+	Records        int64  `json:"records"`
+	RecordBytes    int64  `json:"record_bytes"`
+	Revisions      int64  `json:"revisions"`
+	RevisionBytes  int64  `json:"revision_bytes"`
+	DeletedRecords int64  `json:"deleted_records"`
+	Collections    int64  `json:"collections"`
+	Recount        *struct {
+		BlobBytes   int64 `json:"blob_bytes"`
+		Blobs       int64 `json:"blobs"`
+		Records     int64 `json:"records"`
+		RecordBytes int64 `json:"record_bytes"`
+	} `json:"recount,omitempty"`
+	Drift bool `json:"drift"`
+}
+
+// AppUsage reads counters (cheap) and, with recount, compares them with a scan (expensive; for
+// inventories and drift checks). fix rewrites the counters from the scan.
+func (a *Admin) AppUsage(ctx context.Context, app string, recount, fix bool) (*Usage, error) {
+	u := &Usage{App: app}
+	err := a.tx(ctx, app, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `SELECT max_blob_bytes, max_blobs, max_records, max_record_bytes FROM app_quotas WHERE app = $1`, app).
+			Scan(&u.Quota.MaxBlobBytes, &u.Quota.MaxBlobs, &u.Quota.MaxRecords, &u.Quota.MaxRecordBytes); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT coalesce(sum(bytes),0), coalesce(sum(blobs),0), coalesce(sum(reserved_bytes),0),
+			coalesce(sum(reservations),0) FROM blob_usage WHERE app = $1`, app).Scan(&u.BlobBytes, &u.Blobs, &u.ReservedBytes, &u.Reservations); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT coalesce(sum(records),0), coalesce(sum(bytes),0) FROM record_usage WHERE app = $1`, app).
+			Scan(&u.Records, &u.RecordBytes); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT count(*), coalesce(sum(size_bytes),0) FROM record_revisions WHERE app = $1`, app).
+			Scan(&u.Revisions, &u.RevisionBytes); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE deleted_at IS NOT NULL), (SELECT count(*) FROM collections WHERE app = $1)
+			FROM records WHERE app = $1`, app).Scan(&u.DeletedRecords, &u.Collections); err != nil {
+			return err
+		}
+		if !recount && !fix {
+			return nil
+		}
+		rc := &struct {
+			BlobBytes   int64 `json:"blob_bytes"`
+			Blobs       int64 `json:"blobs"`
+			Records     int64 `json:"records"`
+			RecordBytes int64 `json:"record_bytes"`
+		}{}
+		if err := tx.QueryRow(ctx, `SELECT coalesce(sum(size_bytes),0), count(*) FROM blobs WHERE app = $1 AND state = 'active'`, app).
+			Scan(&rc.BlobBytes, &rc.Blobs); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT count(*), coalesce(sum(sb_record_bytes(records)),0) FROM records WHERE app = $1 AND deleted_at IS NULL`, app).
+			Scan(&rc.Records, &rc.RecordBytes); err != nil {
+			return err
+		}
+		u.Recount = rc
+		u.Drift = rc.BlobBytes != u.BlobBytes || rc.Blobs != u.Blobs || rc.Records != u.Records || rc.RecordBytes != u.RecordBytes
+		if !fix || !u.Drift {
+			return nil
+		}
+		// Rewrite the counters from the scan, under locks that stop concurrent writers meanwhile.
+		if _, err := tx.Exec(ctx, `LOCK TABLE records, blobs IN SHARE MODE`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM record_usage WHERE app = $1`, app); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO record_usage (app, shard, records, bytes)
+			SELECT app, sb_usage_shard(id), count(*), sum(sb_record_bytes(records)) FROM records
+			WHERE app = $1 AND deleted_at IS NULL GROUP BY 1, 2`, app); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE blob_usage SET bytes = $2, blobs = $3,
+			reserved_bytes = (SELECT coalesce(sum(reserved_bytes),0) FROM blobs WHERE app = $1 AND state = 'pending'),
+			reservations = (SELECT count(*) FROM blobs WHERE app = $1 AND state = 'pending') WHERE app = $1`,
+			app, rc.BlobBytes, rc.Blobs); err != nil {
+			return err
+		}
+		return a.audit(ctx, tx, app, "app.usage_reconcile", "app", app, "usage counters rewritten from a scan", nil)
+	})
+	return u, err
+}

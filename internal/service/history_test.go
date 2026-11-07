@@ -101,14 +101,11 @@ func TestHistoryRetention(t *testing.T) {
 	for v := 1; v <= 4; v++ {
 		must[*service.Record](t)(env.C.Records.Update(ctx, eng, "short", r.ID, in(`{"n":1}`), v))
 	}
-	stats, err := env.C.Worker.RunOnce(ctx)
-	if err != nil || stats.RevisionsPruned != 3 {
-		t.Fatalf("prune: %v %+v", err, stats)
-	}
+	// History is trimmed as each version is written; no background pass is needed.
 	revs, _, _ := env.C.Records.History(ctx, eng, "short", r.ID, 0, 0)
 	if len(revs) != 2 || revs[1].Version != 4 {
 		t.Fatalf("kept %+v", revs)
 	}
-	_, err = env.C.Records.Restore(ctx, eng, "short", r.ID, 1, 5)
+	_, err := env.C.Records.Restore(ctx, eng, "short", r.ID, 1, 5)
 	wantCode(t, err, "not_found")
 }

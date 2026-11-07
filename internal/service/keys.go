@@ -140,7 +140,8 @@ func (k *Keys) ClearCache() { k.cache.Clear() }
 
 // CacheStats reports cache effectiveness (metrics).
 func (k *Keys) CacheStats() (entries int, hits, misses, evictions int64) {
-	return k.cache.Len(), k.cache.Hits, k.cache.Misses, k.cache.Evictions
+	hits, misses, evictions = k.cache.Stats()
+	return k.cache.Len(), hits, misses, evictions
 }
 
 // SealJSON seals v under the scope's active data key.

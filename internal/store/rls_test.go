@@ -5,10 +5,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/paulmalmquist/storage_relspace/internal/errs"
 	"github.com/paulmalmquist/storage_relspace/internal/store"
 	"github.com/paulmalmquist/storage_relspace/internal/testenv/pgtest"
 )
@@ -390,5 +392,28 @@ func TestPolicyPlansUseIndexes(t *testing.T) {
 		if !strings.Contains(strings.Join(lines, " "), "_pkey") && !strings.Contains(strings.Join(lines, " "), "Seq Scan") {
 			t.Errorf("%s: %v", q, lines)
 		}
+	}
+}
+
+// An exhausted pool fails fast with 503 instead of queueing until the request deadline.
+func TestPoolExhaustionFailsFast(t *testing.T) {
+	f := setup(t)
+	pool, err := store.Open(f.ctx, f.db.RuntimeURL, store.Options{Schema: f.db.Schema, MaxConns: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	db := store.NewDB(pool)
+	db.AcquireTimeout = 100 * time.Millisecond
+	hold, release := make(chan struct{}), make(chan struct{})
+	go func() {
+		_ = db.Run(f.ctx, scope("notes:test", "alice"), func(pgx.Tx) error { close(hold); <-release; return nil })
+	}()
+	<-hold
+	start := time.Now()
+	err = db.Run(f.ctx, scope("notes:test", "alice"), func(pgx.Tx) error { return nil })
+	close(release)
+	if !errs.Is(err, "unavailable") || time.Since(start) > 2*time.Second {
+		t.Fatalf("waited %v: %v", time.Since(start), err)
 	}
 }

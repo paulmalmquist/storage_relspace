@@ -109,6 +109,9 @@ type Blobs struct {
 	kms         crypto.KeyProvider
 	ChunkSize   int
 	MaxBytes    int64 // largest single-request upload (see Limits)
+	MaxBlob     int64 // largest blob, through an upload session
+	PartSize    int   // plaintext bytes per session part
+	SessionTTL  time.Duration
 	MaxMetaSize int
 	LeaseTTL    time.Duration
 	// DeleteGrace delays object deletion after a logical delete (0: as soon as the worker runs).
@@ -126,6 +129,16 @@ type BlobInput struct {
 }
 
 func (b *Blobs) validate(in *BlobInput) error {
+	if err := b.validateMeta(in); err != nil {
+		return err
+	}
+	if in.DeclaredSize > b.MaxBytes {
+		return errs.PayloadTooLarge("blob exceeds %d bytes; use an upload session (POST /v1/apps/{app}/uploads)", b.MaxBytes)
+	}
+	return nil
+}
+
+func (b *Blobs) validateMeta(in *BlobInput) error {
 	if in.ContentType == "" {
 		in.ContentType = "application/octet-stream"
 	}
@@ -140,9 +153,6 @@ func (b *Blobs) validate(in *BlobInput) error {
 		if len(raw) > b.MaxMeta() {
 			return errs.Invalid("metadata exceeds %d bytes", b.MaxMeta())
 		}
-	}
-	if in.DeclaredSize > b.MaxBytes {
-		return errs.PayloadTooLarge("blob exceeds %d bytes; use a multipart upload session", b.MaxBytes)
 	}
 	return nil
 }
@@ -249,11 +259,18 @@ func (b *Blobs) Begin(ctx context.Context, c Ctx, in BlobInput) (*Upload, *Repla
 		if err != nil {
 			return err
 		}
+		// The quota trigger reserves the declared size (or the single-request maximum when the size
+		// is unknown) until the upload commits or aborts.
+		reserve := in.DeclaredSize
+		if reserve < 0 {
+			reserve = b.MaxBytes
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO blobs (app, id, state, marking, content_type, chunk_size, kek_id, wrapped_dek,
-			meta_key_id, sealed_meta, storage_key, created_by, owner, visibility, team_id, aad_version, lease_owner, lease_expires)
-			VALUES ($1,$2,'pending',$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,$13,3,$14,$15)`,
+			meta_key_id, sealed_meta, storage_key, created_by, owner, visibility, team_id, aad_version, lease_owner, lease_expires,
+			reserved_bytes)
+			VALUES ($1,$2,'pending',$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,$13,3,$14,$15,$16)`,
 			c.App, u.ID, in.Marking.Banner(), in.ContentType, b.ChunkSize, wrapped.KEKID, wrapped.Ciphertext, metaKey, sealed,
-			u.storageKey, c.Principal.Subject, vis, team, u.lease, time.Now().Add(b.LeaseTTL)); err != nil {
+			u.storageKey, c.Principal.Subject, vis, team, u.lease, time.Now().Add(b.LeaseTTL), reserve); err != nil {
 			return err
 		}
 		return b.receipts.assign(ctx, tx, c, "blob", u.ID)
@@ -332,7 +349,7 @@ func (u *Upload) Write(p []byte) (int, error) {
 	u.size += int64(len(p))
 	if u.size > u.svc.MaxBytes {
 		u.Abort("size limit exceeded")
-		return 0, errs.PayloadTooLarge("blob exceeds %d bytes; use a multipart upload session", u.svc.MaxBytes)
+		return 0, errs.PayloadTooLarge("blob exceeds %d bytes; use an upload session (POST /v1/apps/{app}/uploads)", u.svc.MaxBytes)
 	}
 	u.mac.Write(p)
 	ct, err := u.enc.Update(p)
@@ -436,15 +453,19 @@ func (b *Blobs) abortPending(ctx context.Context, tx pgx.Tx, app, id, leaseOwner
 		q += ` AND lease_owner = $3`
 		args = append(args, leaseOwner)
 	}
-	var key string
-	err := tx.QueryRow(ctx, q+` RETURNING storage_key`, args...).Scan(&key)
+	var key, layout string
+	err := tx.QueryRow(ctx, q+` RETURNING storage_key, layout`, args...).Scan(&key, &layout)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	return enqueueObjectDelete(ctx, tx, app, id, key, 0)
+	keys, err := objectKeys(ctx, tx, app, id, key, layout)
+	if err != nil {
+		return err
+	}
+	return enqueueObjectDelete(ctx, tx, app, id, keys, 0)
 }
 
 // Put stores a small in-memory object.
@@ -469,22 +490,27 @@ func (b *Blobs) Put(ctx context.Context, c Ctx, data []byte, in BlobInput) (*Blo
 // ---- reads ---------------------------------------------------------------------------------------
 
 type blobRow struct {
-	id, state, marking, contentType, kekID, metaKeyID, storageKey, createdBy, owner, visibility string
-	teamID                                                                                      *string
-	size                                                                                        *int64
-	wrappedDEK, sealedMeta                                                                      []byte
-	sha                                                                                         *string
-	aadVersion                                                                                  int
-	createdAt                                                                                   time.Time
+	id, state, marking, contentType, kekID, metaKeyID, storageKey, createdBy, owner, visibility, layout string
+	teamID                                                                                              *string
+	size, declaredSize                                                                                  *int64
+	partSize                                                                                            *int
+	chunkSize                                                                                           int
+	wrappedDEK, sealedMeta                                                                              []byte
+	sha                                                                                                 *string
+	aadVersion                                                                                          int
+	createdAt                                                                                           time.Time
+	leaseExpires                                                                                        *time.Time
 }
 
 const blobCols = `id, state, marking, content_type, size_bytes, kek_id, wrapped_dek, meta_key_id, sealed_meta,
-	ciphertext_sha256, storage_key, created_by, created_at, owner, visibility, team_id, aad_version`
+	ciphertext_sha256, storage_key, created_by, created_at, owner, visibility, team_id, aad_version, layout,
+	part_size, declared_size, chunk_size, lease_expires`
 
 func scanBlob(row pgx.Row) (*blobRow, error) {
 	var r blobRow
 	err := row.Scan(&r.id, &r.state, &r.marking, &r.contentType, &r.size, &r.kekID, &r.wrappedDEK, &r.metaKeyID,
-		&r.sealedMeta, &r.sha, &r.storageKey, &r.createdBy, &r.createdAt, &r.owner, &r.visibility, &r.teamID, &r.aadVersion)
+		&r.sealedMeta, &r.sha, &r.storageKey, &r.createdBy, &r.createdAt, &r.owner, &r.visibility, &r.teamID, &r.aadVersion,
+		&r.layout, &r.partSize, &r.declaredSize, &r.chunkSize, &r.leaseExpires)
 	return &r, err
 }
 
@@ -610,19 +636,31 @@ func (b *Blobs) Open(ctx context.Context, c Ctx, id string) (*BlobMeta, io.ReadC
 		}
 		return nil, nil, kmsError(err)
 	}
-	src, err := b.backend.Read(ctx, row.storageKey)
-	if err != nil {
-		return nil, nil, err
-	}
+	var src io.ReadCloser
 	sha := sha256.New()
+	expected := ""
+	if row.layout == "parts" {
+		// Each part's digest is checked as it ends; the row's digest covers the list of parts.
+		pr, err := b.openParts(ctx, c, row)
+		if err != nil {
+			if errs.Is(err, "integrity_violation") {
+				audited(err)
+			}
+			return nil, nil, err
+		}
+		src = pr
+	} else {
+		if src, err = b.backend.Read(ctx, row.storageKey); err != nil {
+			return nil, nil, err
+		}
+		if row.sha != nil {
+			expected = *row.sha
+		}
+	}
 	dec, err := crypto.NewDecryptingReader(io.TeeReader(src, sha), dek, blobCtx(row.aadVersion, "blob", c.App, id, m))
 	if err != nil {
 		_ = src.Close()
 		return nil, nil, err
-	}
-	expected := ""
-	if row.sha != nil {
-		expected = *row.sha
 	}
 	cr := &contentReader{Reader: dec, src: src, sha: sha, expected: expected, onError: audited}
 	buffered := bufio.NewReaderSize(cr, 256*1024)
@@ -660,7 +698,7 @@ func (b *Blobs) List(ctx context.Context, c Ctx, limit int, cur string) ([]*Blob
 		if _, err := b.check(ctx, tx, c, auth.BlobList, "blob", "", nil, checkOpts{skipAllow: true}); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT DISTINCT marking FROM blobs WHERE app = $1 AND state = 'active'`, c.App)
+		rows, err := tx.Query(ctx, `SELECT marking FROM marking_catalog WHERE app = $1 AND scope = 'blobs'`, c.App)
 		if err != nil {
 			return err
 		}
@@ -746,7 +784,11 @@ func (b *Blobs) Delete(ctx context.Context, c Ctx, id string, shred bool) error 
 		if tag.RowsAffected() != 1 {
 			return errs.NotFound("blob not found")
 		}
-		if err := enqueueObjectDelete(ctx, tx, c.App, id, r.storageKey, b.DeleteGrace); err != nil {
+		keys, err := objectKeys(ctx, tx, c.App, id, r.storageKey, r.layout)
+		if err != nil {
+			return err
+		}
+		if err := enqueueObjectDelete(ctx, tx, c.App, id, keys, b.DeleteGrace); err != nil {
 			return err
 		}
 		reason := "blob deleted; object deletion queued"

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/paulmalmquist/storage_relspace/internal/errs"
+	"github.com/paulmalmquist/storage_relspace/internal/telemetry"
 )
 
 // Operation receipts make retried mutations safe when a response is lost.
@@ -137,6 +138,7 @@ func (r *receipts) claim(ctx context.Context, tx pgx.Tx, c Ctx, op Operation, le
 		rc.ResourceVersion = *resVersion
 	}
 	if status == "succeeded" {
+		telemetry.Replays.Add(ctx, 1, telemetry.Code(op.Type))
 		return rc, nil
 	}
 	// Pending: only long operations (uploads) hold a pending receipt across transactions.

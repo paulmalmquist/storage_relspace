@@ -151,6 +151,10 @@ func (k *Core) settle(ctx context.Context, err error) error {
 			return errs.Invalid("violates a storage rule")
 		case "57014":
 			return errs.Unavailable("statement timed out")
+		case "53400": // raised by the quota triggers; Detail names the limit
+			return errs.QuotaExceeded("app quota %s reached", pg.Detail)
+		case "40001", "40P01":
+			return errs.Unavailable("concurrent update; retry")
 		}
 	}
 	return err

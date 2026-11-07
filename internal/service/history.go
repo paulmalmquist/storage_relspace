@@ -42,6 +42,17 @@ func (r *Records) revision(ctx context.Context, tx pgx.Tx, c Ctx, col *Collectio
 		SELECT app, id, version, collection, marking, $4, data_plain, data_sealed, key_id, aad_version, $5, $6, $7
 		FROM records WHERE app = $1 AND id = $2 AND version = $3`,
 		col.App, rr.id, rr.version, op, size, c.Principal.Subject, c.Actor())
+	if err != nil {
+		return err
+	}
+	// History expiry happens on write and touches only this record (primary-key range), so it is
+	// bounded by the limit and needs no background scan. Lowering a limit applies on each record's
+	// next write.
+	if col.HistoryLimit < 1 {
+		return nil // not loaded; never prune on a guess
+	}
+	_, err = tx.Exec(ctx, `DELETE FROM record_revisions WHERE app = $1 AND record_id = $2 AND version <= $3`,
+		col.App, rr.id, rr.version-col.HistoryLimit)
 	return err
 }
 

@@ -840,6 +840,378 @@
     }
    }
   },
+  "/v1/apps/{app}/uploads": {
+   "post": {
+    "operationId": "createUpload",
+    "summary": "Start an upload session for a blob larger than one request allows",
+    "tags": [
+     "uploads"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "201": {
+      "description": "Session created; the declared size is reserved against the app's quota",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UploadSession"
+        }
+       }
+      },
+      "headers": {
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "200": {
+      "description": "Replayed (same Idempotency-Key)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UploadSession"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "413": {
+      "$ref": "#/components/responses/TooLarge"
+     },
+     "507": {
+      "$ref": "#/components/responses/Quota"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/UploadIn"
+       }
+      }
+     }
+    },
+    "description": "Send each part with PUT .../parts/{n}: exactly part_size bytes, the last part the remainder. Parts may be sent in any order and retried. Then POST .../complete."
+   }
+  },
+  "/v1/apps/{app}/uploads/{id}": {
+   "get": {
+    "operationId": "getUpload",
+    "summary": "Session state, including which parts have arrived (to resume)",
+    "tags": [
+     "uploads"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UploadSession"
+        }
+       }
+      },
+      "headers": {
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   },
+   "delete": {
+    "operationId": "abortUpload",
+    "summary": "Abort a pending session; its parts are deleted by the worker",
+    "tags": [
+     "uploads"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Aborted"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/uploads/{id}/parts/{n}": {
+   "put": {
+    "operationId": "putUploadPart",
+    "summary": "Store one part (replaces an earlier copy of the same part)",
+    "tags": [
+     "uploads"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/part"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PartOut"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "413": {
+      "$ref": "#/components/responses/TooLarge"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/octet-stream": {
+       "schema": {
+        "type": "string",
+        "format": "binary"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/uploads/{id}/complete": {
+   "post": {
+    "operationId": "completeUpload",
+    "summary": "Activate the blob once every part is present with its exact size",
+    "tags": [
+     "uploads"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "201": {
+      "description": "Stored",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BlobOut"
+        }
+       }
+      },
+      "headers": {
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "200": {
+      "description": "Already completed",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BlobOut"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/usage": {
+   "get": {
+    "operationId": "getUsage",
+    "summary": "What the app stores against its quota",
+    "tags": [
+     "apps"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Usage"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
   "/v1/apps/{app}/blobs/{id}": {
    "get": {
     "operationId": "getBlob",
@@ -2461,6 +2833,16 @@
      "type": "integer"
     }
    },
+   "part": {
+    "name": "n",
+    "in": "path",
+    "required": true,
+    "description": "Part number, 1-based",
+    "schema": {
+     "type": "integer",
+     "minimum": 1
+    }
+   },
    "op_id": {
     "name": "op_id",
     "in": "path",
@@ -2693,7 +3075,7 @@
     }
    },
    "Conflict": {
-    "description": "Conflict (codes: conflict, idempotency_key_reused, operation_in_progress, upload_expired)",
+    "description": "Conflict (codes: conflict, idempotency_key_reused, operation_in_progress, upload_expired, upload_incomplete)",
     "content": {
      "application/problem+json": {
       "schema": {
@@ -2876,6 +3258,28 @@
      "max_single_upload_bytes": {
       "type": "integer"
      },
+     "max_blob_bytes": {
+      "type": "integer"
+     },
+     "upload_session": {
+      "type": "object",
+      "properties": {
+       "part_size": {
+        "type": "integer"
+       },
+       "max_parts": {
+        "type": "integer"
+       },
+       "session_ttl_seconds": {
+        "type": "integer"
+       }
+      },
+      "additionalProperties": false,
+      "required": [
+       "part_size",
+       "max_parts"
+      ]
+     },
      "max_blob_metadata_bytes": {
       "type": "integer"
      },
@@ -2895,8 +3299,195 @@
     "additionalProperties": true,
     "required": [
      "max_single_upload_bytes",
+     "max_blob_bytes",
+     "upload_session",
      "max_record_bytes",
      "max_page"
+    ]
+   },
+   "UploadIn": {
+    "type": "object",
+    "properties": {
+     "size_bytes": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "marking": {
+      "type": "string"
+     },
+     "content_type": {
+      "type": "string"
+     },
+     "filename": {
+      "type": "string",
+      "maxLength": 255
+     },
+     "metadata": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "visibility": {
+      "type": "string",
+      "enum": [
+       "private",
+       "team",
+       "app"
+      ]
+     },
+     "team_id": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "size_bytes",
+     "marking"
+    ]
+   },
+   "UploadSession": {
+    "type": "object",
+    "properties": {
+     "upload_id": {
+      "type": "string"
+     },
+     "blob_id": {
+      "type": "string"
+     },
+     "marking": {
+      "type": "string"
+     },
+     "size_bytes": {
+      "type": "integer"
+     },
+     "part_size": {
+      "type": "integer"
+     },
+     "part_count": {
+      "type": "integer"
+     },
+     "received_parts": {
+      "type": "array",
+      "items": {
+       "type": "integer"
+      }
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "pending",
+       "active",
+       "aborted",
+       "deleted",
+       "shredded",
+       "purged"
+      ]
+     },
+     "expires_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "replayed": {
+      "type": "boolean"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "upload_id",
+     "blob_id",
+     "marking",
+     "size_bytes",
+     "part_size",
+     "part_count",
+     "received_parts",
+     "state"
+    ]
+   },
+   "PartOut": {
+    "type": "object",
+    "properties": {
+     "part_number": {
+      "type": "integer"
+     },
+     "size_bytes": {
+      "type": "integer"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "part_number",
+     "size_bytes"
+    ]
+   },
+   "Usage": {
+    "type": "object",
+    "properties": {
+     "app": {
+      "type": "string"
+     },
+     "blob_bytes": {
+      "type": "integer"
+     },
+     "blobs": {
+      "type": "integer"
+     },
+     "reserved_bytes": {
+      "type": "integer"
+     },
+     "records": {
+      "type": "integer"
+     },
+     "record_bytes": {
+      "type": "integer"
+     },
+     "max_blob_bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "max_blobs": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "max_records": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "max_record_bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "app",
+     "blob_bytes",
+     "blobs",
+     "reserved_bytes",
+     "records",
+     "record_bytes"
     ]
    },
    "PrincipalIn": {

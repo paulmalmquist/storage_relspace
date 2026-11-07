@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/paulmalmquist/storage_relspace/internal/errs"
 	"github.com/paulmalmquist/storage_relspace/internal/service"
 	"github.com/paulmalmquist/storage_relspace/internal/store"
+	"github.com/paulmalmquist/storage_relspace/internal/telemetry"
 )
 
 //go:embed openapi.json
@@ -43,13 +45,14 @@ const requestIDKey ctxKey = 1
 var ridRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,64}$`)
 
 type Server struct {
-	c   *service.Container
-	mux *http.ServeMux
+	c      *service.Container
+	mux    *http.ServeMux
+	budget *budget
 }
 
 // New returns the API handler with middleware applied.
 func New(c *service.Container) http.Handler {
-	s := &Server{c: c, mux: http.NewServeMux()}
+	s := &Server{c: c, mux: http.NewServeMux(), budget: newBudget(c.Config)}
 	s.routes()
 	return s.middleware(s.mux)
 }
@@ -91,6 +94,12 @@ func (s *Server) table() map[string]handler {
 		"PUT " + a + "/teams/{team}/members/{subject}":    s.app(s.putTeamMember),
 		"DELETE " + a + "/teams/{team}/members/{subject}": s.app(s.removeTeamMember),
 		"POST " + a + "/blobs":                            s.app(s.uploadBlob),
+		"POST " + a + "/uploads":                          s.app(s.createUpload),
+		"GET " + a + "/uploads/{id}":                      s.app(s.getUpload),
+		"PUT " + a + "/uploads/{id}/parts/{n}":            s.app(s.putUploadPart),
+		"POST " + a + "/uploads/{id}/complete":            s.app(s.completeUpload),
+		"DELETE " + a + "/uploads/{id}":                   s.app(s.abortUpload),
+		"GET " + a + "/usage":                             s.app(s.appUsage),
 		"GET " + a + "/blobs":                             s.app(s.listBlobs),
 		"GET " + a + "/blobs/{id}":                        s.app(s.getBlob),
 		"GET " + a + "/blobs/{id}/content":                s.app(s.downloadBlob),
@@ -131,13 +140,32 @@ func Routes() []string {
 	return out
 }
 
-// app resolves the {app} path segment into the request's scope and passes the client operation ID
+// streaming routes carry bodies whose duration depends on their size; every other route gets the
+// request deadline.
+var streaming = map[string]bool{
+	"POST /v1/apps/{app}/blobs":                 true,
+	"GET /v1/apps/{app}/blobs/{id}/content":     true,
+	"PUT /v1/apps/{app}/uploads/{id}/parts/{n}": true,
+}
+
+// app resolves the {app} path segment into the request's scope, charges the request to the app's
+// and the caller's budgets, applies the request deadline, and passes the client operation ID
 // (Idempotency-Key) through.
 func (s *Server) app(h handler) handler {
 	return func(w http.ResponseWriter, r *http.Request, c service.Ctx) error {
 		app, err := s.c.AppScope(r.PathValue("app"))
 		if err != nil {
 			return err
+		}
+		release, err := s.budget.admit(app, c.Principal.Subject)
+		if err != nil {
+			return err
+		}
+		defer release()
+		if !streaming[r.Pattern] && s.c.Config.RequestTimeout > 0 {
+			ctx, cancel := context.WithTimeout(r.Context(), s.c.Config.RequestTimeout)
+			defer cancel()
+			r = r.WithContext(ctx)
 		}
 		c.App = app
 		c.OpID = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
@@ -194,6 +222,11 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 					problem(sw, r, 500, "internal_error", "InternalError", "internal error")
 				}
 			}
+			route := r.Pattern
+			if route == "" {
+				route = "unmatched"
+			}
+			telemetry.RequestDuration.Record(context.Background(), time.Since(start).Seconds(), telemetry.Route(route, r.Method, sw.status))
 			slog.Info("request", "request_id", rid, "method", r.Method, "path", r.URL.Path, "status", sw.status,
 				"bytes", sw.bytes, "duration_ms", time.Since(start).Milliseconds())
 		}()
@@ -224,6 +257,14 @@ func (s *Server) authed(h handler) http.HandlerFunc {
 func (s *Server) authFailure(r *http.Request, reason, subject string) error {
 	if subject == "" {
 		subject = "anonymous"
+	}
+	if !s.budget.auditAuthFailure(r) {
+		// A burst of failures from one address: keep the record (structured log, exported to the
+		// audit sink) without a database write per attempt.
+		telemetry.AuthAuditSkips.Add(r.Context(), 1)
+		slog.Warn("authentication failure", "audit", true, "chain_write", "suppressed", "subject", subject,
+			"reason", reason, "request_id", requestID(r), "remote", r.RemoteAddr)
+		return errs.Unauthenticated("%s", reason)
 	}
 	if err := s.c.Auditing.Record(r.Context(), audit.Entry{Anonymous: subject, Action: "auth.authenticate",
 		ResourceType: "session", Decision: "deny", Reason: reason, RequestID: requestID(r)}); err != nil {
@@ -322,7 +363,7 @@ var titles = map[string]string{
 	"precondition_required": "PreconditionRequired", "integrity_violation": "IntegrityViolation",
 	"configuration_error": "ConfigurationError", "internal_error": "InternalError", "rate_limited": "TooManyRequests",
 	"unavailable": "ServiceUnavailable", "quota_exceeded": "QuotaExceeded", "idempotency_key_reused": "IdempotencyKeyReused",
-	"operation_in_progress": "OperationInProgress", "upload_expired": "UploadExpired",
+	"operation_in_progress": "OperationInProgress", "upload_expired": "UploadExpired", "upload_incomplete": "UploadIncomplete",
 }
 
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
@@ -339,8 +380,11 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	if e.Status >= 500 {
 		slog.Error("request failed", "request_id", requestID(r), "code", e.Code, "detail", e.Detail)
 	}
-	switch e.Code {
-	case "rate_limited", "operation_in_progress", "unavailable":
+	telemetry.Errors.Add(r.Context(), 1, telemetry.Code(e.Code))
+	switch {
+	case e.RetryAfter > 0:
+		w.Header().Set("Retry-After", strconv.Itoa(e.RetryAfter))
+	case e.Code == "rate_limited" || e.Code == "operation_in_progress" || e.Code == "unavailable":
 		w.Header().Set("Retry-After", "1")
 	}
 	problem(w, r, e.Status, e.Code, titles[e.Code], e.Detail)

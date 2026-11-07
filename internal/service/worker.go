@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/paulmalmquist/storage_relspace/internal/audit"
 	"github.com/paulmalmquist/storage_relspace/internal/store"
+	"github.com/paulmalmquist/storage_relspace/internal/telemetry"
 )
 
 // The worker is Strongbox's single background mechanism. Each pass:
@@ -21,7 +23,8 @@ import (
 //     max_attempts. Effects are idempotent (deleting a missing object succeeds), so at-least-once
 //     execution is safe.
 //  2. for each app, in worker mode pinned to that app: aborts pending uploads whose lease expired,
-//     trims record history to each collection's history_limit, and drops expired receipts.
+//     purges deleted records past their collection's retention (with their history), and drops
+//     expired receipts. Each statement handles at most maintainBatch rows.
 //  3. delivers committed audit events to the structured log, per chain, at least once.
 //
 // Job payloads hold scoped IDs only (app, blob id, object key), never content. Every step runs in
@@ -29,36 +32,69 @@ import (
 // (on any replica) picks up.
 
 type objectDeletePayload struct {
-	BlobID     string `json:"blob_id"`
-	StorageKey string `json:"storage_key"`
+	BlobID     string   `json:"blob_id"`
+	StorageKey string   `json:"storage_key,omitempty"` // single-object blobs (and jobs queued before parts existed)
+	Keys       []string `json:"keys,omitempty"`        // every object of the blob, parts included
 }
 
-func enqueueObjectDelete(ctx context.Context, tx pgx.Tx, app, blobID, key string, delay time.Duration) error {
-	payload, _ := json.Marshal(objectDeletePayload{BlobID: blobID, StorageKey: key})
+func (p objectDeletePayload) keys() []string {
+	if len(p.Keys) > 0 {
+		return p.Keys
+	}
+	return []string{p.StorageKey}
+}
+
+// objectKeys lists every object a blob owns: its single object, or each uploaded part.
+func objectKeys(ctx context.Context, tx pgx.Tx, app, blobID, storageKey, layout string) ([]string, error) {
+	if layout != "parts" {
+		return []string{storageKey}, nil
+	}
+	rows, err := tx.Query(ctx, `SELECT storage_key FROM blob_parts WHERE app = $1 AND blob_id = $2 ORDER BY part_number`, app, blobID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+func enqueueObjectDelete(ctx context.Context, tx pgx.Tx, app, blobID string, keys []string, delay time.Duration) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	payload, _ := json.Marshal(objectDeletePayload{BlobID: blobID, Keys: keys})
 	_, err := tx.Exec(ctx, `INSERT INTO outbox (app, kind, payload, available_at) VALUES ($1, 'object.delete', $2, $3)`,
 		app, payload, time.Now().Add(delay))
 	return err
 }
 
 type Worker struct {
-	core      *Core
-	blobs     *Blobs
-	Backend   store.Backend // where object deletions go (the blob backend)
-	ID        string
-	Batch     int
-	Lease     time.Duration
-	Interval  time.Duration
-	LastStats WorkerStats
+	core     *Core
+	blobs    *Blobs
+	Backend  store.Backend // where object deletions go (the blob backend)
+	ID       string
+	Batch    int
+	Lease    time.Duration
+	Interval time.Duration
+
+	mu   sync.Mutex
+	last WorkerStats
+}
+
+// LastStats is the most recent completed pass (metrics read it concurrently).
+func (w *Worker) LastStats() WorkerStats {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.last
 }
 
 type WorkerStats struct {
 	JobsDone, JobsFailed, JobsDead int
 	UploadsAborted                 int
-	RevisionsPruned                int
+	RecordsPurged                  int
 	ReceiptsExpired                int
 	AuditDelivered                 int
 	OldestPendingJob               time.Duration // outbox lag
 	AuditUndelivered               int64         // audit delivery lag (events)
+	DeadJobs                       int64         // outbox jobs that exhausted their retries (all time)
 }
 
 const workerSubject = "system:worker"
@@ -76,11 +112,13 @@ func (w *Worker) Run(ctx context.Context) {
 	t := time.NewTicker(w.Interval)
 	defer t.Stop()
 	for {
-		if stats, err := w.RunOnce(ctx); err != nil && ctx.Err() == nil {
+		stats, err := w.RunOnce(ctx)
+		if err != nil && ctx.Err() == nil {
 			slog.Error("worker pass failed", "error", err)
-		} else {
-			w.LastStats = stats
 		}
+		w.mu.Lock()
+		w.last = stats
+		w.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return
@@ -99,15 +137,17 @@ func (w *Worker) RunOnce(ctx context.Context) (WorkerStats, error) {
 	if err != nil {
 		return s, err
 	}
+	var failed []error
 	for _, app := range apps {
+		// One app's failure (a corrupt row, a lock timeout) must not starve the others.
 		if err := w.maintain(ctx, app, &s); err != nil {
-			return s, fmt.Errorf("maintain %s: %w", app, err)
+			failed = append(failed, fmt.Errorf("maintain %s: %w", app, err))
 		}
 	}
 	if err := w.deliverAudit(ctx, &s); err != nil {
-		return s, fmt.Errorf("audit delivery: %w", err)
+		failed = append(failed, fmt.Errorf("audit delivery: %w", err))
 	}
-	return s, nil
+	return s, errors.Join(failed...)
 }
 
 func (w *Worker) apps(ctx context.Context) ([]string, error) {
@@ -158,7 +198,12 @@ func (w *Worker) dispatch(ctx context.Context, s *WorkerStats) error {
 		if oldest != nil && time.Since(*oldest) > 0 {
 			s.OldestPendingJob = time.Since(*oldest)
 		}
-		return nil
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE status = 'dead'`).Scan(&s.DeadJobs); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `DELETE FROM outbox WHERE id IN (SELECT id FROM outbox WHERE status = 'done'
+			AND updated_at < now() - interval '1 day' LIMIT $1 FOR UPDATE SKIP LOCKED)`, maintainBatch)
+		return err
 	})
 	if err != nil {
 		return err
@@ -187,11 +232,14 @@ func (w *Worker) dispatch(ctx context.Context, s *WorkerStats) error {
 		switch {
 		case runErr == nil:
 			s.JobsDone++
+			telemetry.OutboxJobs.Add(ctx, 1, telemetry.Outcome(j.Kind, "done"))
 		case j.Attempts >= j.Max:
 			s.JobsDead++
+			telemetry.OutboxJobs.Add(ctx, 1, telemetry.Outcome(j.Kind, "dead"))
 			slog.Error("outbox job dead", "job", j.ID, "app", j.App, "kind", j.Kind, "attempts", j.Attempts, "error", runErr)
 		default:
 			s.JobsFailed++
+			telemetry.OutboxJobs.Add(ctx, 1, telemetry.Outcome(j.Kind, "retry"))
 		}
 	}
 	return nil
@@ -204,35 +252,48 @@ func (w *Worker) execute(ctx context.Context, j job) error {
 		if err := json.Unmarshal(j.Payload, &p); err != nil {
 			return err
 		}
-		if err := w.Backend.Delete(ctx, p.StorageKey); err != nil {
-			return err
+		for _, key := range p.keys() {
+			if err := w.Backend.Delete(ctx, key); err != nil {
+				return err
+			}
 		}
+		// With its objects gone, the wrapped data key only serves backups; drop it from the live row.
 		return w.core.DB.Run(ctx, w.worker(j.App), func(tx pgx.Tx) error {
-			_, err := tx.Exec(ctx, `UPDATE blobs SET state = 'purged' WHERE app = $1 AND id = $2 AND state IN ('aborted', 'deleted')`,
-				j.App, p.BlobID)
+			_, err := tx.Exec(ctx, `UPDATE blobs SET state = 'purged', wrapped_dek = NULL
+				WHERE app = $1 AND id = $2 AND state IN ('aborted', 'deleted')`, j.App, p.BlobID)
 			return err
 		})
 	}
 	return errors.New("unknown job kind " + j.Kind)
 }
 
+// maintainBatch bounds every maintenance statement, so one pass over a large app holds no lock for
+// long and a backlog drains over several passes.
+const maintainBatch = 500
+
 func (w *Worker) maintain(ctx context.Context, app string, s *WorkerStats) error {
 	return w.core.DB.Run(ctx, w.worker(app), func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `UPDATE blobs SET state = 'aborted', lease_owner = NULL, lease_expires = NULL
-			WHERE app = $1 AND state = 'pending' AND lease_expires < now() RETURNING id, storage_key`, app)
+			WHERE (app, id) IN (SELECT app, id FROM blobs WHERE app = $1 AND state = 'pending' AND lease_expires < now()
+			                    LIMIT $2 FOR UPDATE SKIP LOCKED)
+			RETURNING id, storage_key, layout`, app, maintainBatch)
 		if err != nil {
 			return err
 		}
-		type pending struct{ id, key string }
+		type pending struct{ id, key, layout string }
 		expired, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (pending, error) {
 			var p pending
-			return p, r.Scan(&p.id, &p.key)
+			return p, r.Scan(&p.id, &p.key, &p.layout)
 		})
 		if err != nil {
 			return err
 		}
 		for _, p := range expired {
-			if err := enqueueObjectDelete(ctx, tx, app, p.id, p.key, 0); err != nil {
+			keys, err := objectKeys(ctx, tx, app, p.id, p.key, p.layout)
+			if err != nil {
+				return err
+			}
+			if err := enqueueObjectDelete(ctx, tx, app, p.id, keys, 0); err != nil {
 				return err
 			}
 			if _, err := w.core.Audit.Append(ctx, tx, audit.Entry{App: app, Anonymous: workerSubject, Action: "blob.create",
@@ -241,14 +302,36 @@ func (w *Worker) maintain(ctx context.Context, app string, s *WorkerStats) error
 			}
 		}
 		s.UploadsAborted += len(expired)
-		tag, err := tx.Exec(ctx, `DELETE FROM record_revisions rv USING collections c
-			WHERE rv.app = $1 AND c.app = rv.app AND c.name = rv.collection
-			  AND rv.version <= (SELECT r.version FROM records r WHERE r.app = rv.app AND r.id = rv.record_id) - c.history_limit`, app)
+
+		// Deleted records past their collection's retention are purged with their history.
+		rows, err = tx.Query(ctx, `DELETE FROM records WHERE (app, id) IN (
+				SELECT r.app, r.id FROM records r JOIN collections c ON c.app = r.app AND c.name = r.collection
+				WHERE r.app = $1 AND r.deleted_at < now() - make_interval(days => c.deleted_retention_days)
+				LIMIT $2 FOR UPDATE OF r SKIP LOCKED)
+			RETURNING id, collection`, app, maintainBatch)
 		if err != nil {
 			return err
 		}
-		s.RevisionsPruned += int(tag.RowsAffected())
-		tag, err = tx.Exec(ctx, `DELETE FROM operation_receipts WHERE app = $1 AND expires_at < now()`, app)
+		type purged struct{ id, collection string }
+		gone, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (purged, error) {
+			var p purged
+			return p, r.Scan(&p.id, &p.collection)
+		})
+		if err != nil {
+			return err
+		}
+		for _, p := range gone {
+			if _, err := w.core.Audit.Append(ctx, tx, audit.Entry{App: app, Anonymous: workerSubject, Action: "record.delete",
+				ResourceType: "record", ResourceID: p.id, Decision: "allow", Reason: "deleted record and history purged after retention",
+				Details: map[string]any{"collection": p.collection}}); err != nil {
+				return err
+			}
+		}
+		s.RecordsPurged += len(gone)
+
+		tag, err := tx.Exec(ctx, `DELETE FROM operation_receipts WHERE (app, subject, actor, op_id) IN (
+			SELECT app, subject, actor, op_id FROM operation_receipts WHERE app = $1 AND expires_at < now()
+			LIMIT $2 FOR UPDATE SKIP LOCKED)`, app, maintainBatch)
 		if err != nil {
 			return err
 		}
@@ -288,6 +371,7 @@ func (w *Worker) deliverAudit(ctx context.Context, s *WorkerStats) error {
 		err := w.core.DB.Run(ctx, sc, func(tx pgx.Tx) error {
 			n, err := audit.Deliver(ctx, tx, c.name, c.app, 1000)
 			s.AuditDelivered += n
+			telemetry.AuditDelivered.Add(ctx, int64(n))
 			return err
 		})
 		if err != nil {

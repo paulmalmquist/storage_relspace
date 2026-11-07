@@ -241,3 +241,52 @@ func TestLostResponseIsRecovered(t *testing.T) {
 		t.Fatalf("%d records after a retried create", len(page.Items))
 	}
 }
+
+// A blob larger than one request travels as parts, survives an interrupted client, and counts
+// against the app's usage.
+func TestLargeBlobThroughUploadSession(t *testing.T) {
+	h := newHarness(t)
+	sb := h.app(t, "svc-mes@rel.test")
+	ctx := context.Background()
+	lim, err := client.New(h.srv.URL, client.StaticToken(testenv.Token(t, "svc-mes@rel.test"))).Limits(ctx)
+	if err != nil || lim.UploadSession.PartSize == 0 || lim.MaxBlobBytes <= lim.MaxSingleUploadBytes {
+		t.Fatalf("limits %+v %v", lim, err)
+	}
+	data := make([]byte, 7*lim.UploadSession.PartSize+999)
+	_, _ = rand.Read(data)
+
+	// Start a session and send only some parts, as a client that crashed would.
+	sess, err := sb.CreateUpload(ctx, int64(len(data)), client.BlobOptions{Marking: "CUI//SP-EXPT", Filename: "scan.bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.PartCount != 8 {
+		t.Fatalf("session %+v", sess)
+	}
+	for _, n := range []int{1, 5} {
+		start := int64(n-1) * sess.PartSize
+		if err := sb.UploadPart(ctx, sess.UploadID, n, data[start:start+sess.PartSize]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A new process resumes with the session ID.
+	blob, err := sb.ResumeLargeBlob(ctx, sess.UploadID, bytes.NewReader(data), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := sb.ReadBlob(ctx, blob.ID, 0)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("read back: %v", err)
+	}
+	// One-call form.
+	small := data[:3*lim.UploadSession.PartSize]
+	b2, err := sb.PutLargeBlob(ctx, bytes.NewReader(small), int64(len(small)), client.BlobOptions{Marking: "CUI//SP-EXPT"}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := sb.Usage(ctx)
+	if err != nil || u.Blobs != 2 || u.BlobBytes != int64(len(data)+len(small)) || u.ReservedBytes != 0 {
+		t.Fatalf("usage %+v %v", u, err)
+	}
+	_ = b2
+}
