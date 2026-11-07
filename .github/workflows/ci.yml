@@ -8,8 +8,11 @@ on:
 permissions:
   contents: read
 
+env:
+  STRONGBOX_TEST_DATABASE_URL: postgres://postgres:strongbox@localhost:5432/strongbox_test?sslmode=disable
+
 jobs:
-  test:
+  go:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -22,27 +25,57 @@ jobs:
           --health-cmd "pg_isready -U postgres" --health-interval 2s --health-retries 30
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Format
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: Vet
+        run: go vet ./...
+      - name: Staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+      - name: Tests (race detector, Postgres)
+        run: go test -race -count=1 ./...
+      - name: Tests in enforced FIPS 140-3 mode
+        run: GOFIPS140=v1.0.0 GODEBUG=fips140=only go test -count=1 ./...
+      - name: Vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  python-client:
+    # The Python client against the real Go server.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: strongbox
+          POSTGRES_DB: strongbox
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-retries 30
+    env:
+      STRONGBOX_DATABASE_URL: postgres://postgres:strongbox@localhost:5432/strongbox?sslmode=disable
+      STRONGBOX_DEV_JWT_SECRET: ci-secret-0123456789abcdef0123456789abcdef
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-      - run: pip install -e ".[dev,gcp,s3,mcp]"
-      - name: Lint
+      - run: go build -o bin/strongbox ./cmd/strongbox
+      - name: Start API
         run: |
-          ruff format --check src tests
-          ruff check src tests
-      - name: Type check
-        run: mypy
-      - name: Tests (SQLite)
-        run: pytest -q
-      - name: Tests (Postgres)
+          bin/strongbox init
+          bin/strongbox principal put svc-test --kind service -scope '*' -us-person -cui-access -category '*'
+          bin/strongbox serve -addr 127.0.0.1:8080 &
+          for i in $(seq 1 30); do curl -sf localhost:8080/healthz && break; sleep 1; done
+      - run: pip install -e clients/python pytest pytest-asyncio
+      - name: Live client tests
         env:
-          STRONGBOX_TEST_DATABASE_URL: postgresql+psycopg://postgres:strongbox@localhost:5432/strongbox_test
-        run: pytest -q
-      - name: Static security analysis
-        run: bandit -q -r src
-      - name: Dependency vulnerabilities
-        run: pip-audit
+          STRONGBOX_TEST_API_URL: http://127.0.0.1:8080
+        run: STRONGBOX_TEST_TOKEN=$(bin/strongbox token svc-test) pytest -q clients/python/tests
 
   terraform:
     runs-on: ubuntu-latest
@@ -61,4 +94,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t strongbox:ci .
-      - run: docker run --rm strongbox:ci --help
+      - run: docker run --rm strongbox:ci version
+      - name: FIPS 140-3 module active in the image
+        run: docker run --rm strongbox:ci fips-check

@@ -3,7 +3,7 @@
 ## Principles
 
 1. **One enforcement core.** The REST API and the MCP server both reach data only through the service
-   layer (`services/`), where every call passes the policy engine and writes an audit event. The MCP
+   layer (`internal/service`), where every call passes the policy engine and writes an audit event. The MCP
    server is an API client, so it cannot skip either.
 2. **Encrypt in the application, not just the platform.** Storage-level CMEK protects disks and backups;
    application-level envelope encryption also protects against database administrators, SQL injection,
@@ -49,7 +49,8 @@ sequenceDiagram
 ```
 Cloud KMS HSM key  "data-kek"   (rotates every 90 days; old versions stay enabled for unwrap)
  ├── blob data keys             one per object, wrapped with AAD "blob-dek|<id>|<marking>"
- │     └── object ciphertext    STREAM AES-256-GCM, 64 KiB segments, AAD "blob|<id>|<marking>"
+ │     └── object ciphertext    AES-256-GCM in 64 KiB segments; each segment has a module-generated
+ │                              nonce and AAD "blob|<id>|<marking>" + segment index + final flag
  ├── "blobmeta" data keys       rotate weekly; seal filename + metadata per blob
  ├── "collection:<name>" data   rotate weekly; seal each record (AAD binds collection, id, marking, version)
  └── "collection:<name>" index  never rotates; HMAC-SHA-256 blind-index tokens
@@ -91,6 +92,18 @@ of both: scopes, CUI categories and dissemination controls are intersected, `us_
 require both, and `delegate`/`principals:admin` never propagate. Audit events record the agent as `actor`
 and the user as `on_behalf_of`. Agents cannot be delegators.
 
+## Ciphertext format
+
+Blob objects start with a 10-byte header (`SBX2`, version, algorithm, segment size). Each 64 KiB plaintext
+segment becomes `nonce(12) | ciphertext | tag(16)`, sealed with `cipher.NewGCMWithRandomNonce`, so the FIPS
+module generates every IV. The authenticated data is the header, the object context (id and marking), the
+segment index and a final-segment flag, so reordering, truncation, extension and cross-object swaps all
+fail authentication. Because each object has its own data key, the 2^32 random-nonce limit per key is
+never approached (a 5 GiB object is about 82,000 segments).
+
+Go's enforced FIPS mode (`GODEBUG=fips140=only`) rejects GCM with caller-chosen IVs, which is why the
+format uses module-generated nonces rather than a counter-derived nonce.
+
 ## Failure behavior
 
 | Failure | Behavior |
@@ -107,7 +120,7 @@ and the user as `on_behalf_of`. Agents cannot be delegators.
 Strongbox needs a Postgres database and an object store, and self-hosted Supabase provides both:
 
 ```bash
-STRONGBOX_DATABASE_URL=postgresql+psycopg://strongbox@supabase-db:5432/postgres
+STRONGBOX_DATABASE_URL=postgres://strongbox@supabase-db:5432/postgres
 STRONGBOX_BLOB_BACKEND=s3
 STRONGBOX_S3_ENDPOINT_URL=https://<supabase-host>/storage/v1/s3
 STRONGBOX_S3_BUCKET=strongbox
@@ -124,9 +137,9 @@ What Supabase should not do here:
 
 ## Extending
 
-- **New backend:** implement `BlobBackend` (`open_writer`, `read`, `delete`, `exists`, `describe`).
-- **New KMS:** implement `KeyProvider` (`wrap`, `unwrap`, `describe`) with AAD support.
-- **Multiple identity providers:** `TokenVerifier` is a protocol; route on the unverified `iss` claim to
-  one `OidcVerifier` per issuer (for example Google for workloads and a workforce IdP for people).
-- **Schema migrations:** the schema is created with SQLAlchemy `create_all` and versioned in `schema_info`;
-  adopt Alembic before the first breaking change.
+- **New backend:** implement `store.Backend` (`OpenWriter`, `Read`, `Delete`, `Describe`).
+- **New KMS:** implement `crypto.KeyProvider` (`Wrap`, `Unwrap`, `Describe`) with AAD support.
+- **Multiple identity providers:** `auth.Verifier` is an interface; route on the unverified `iss` claim to
+  one `OIDCVerifier` per issuer (for example Google for workloads and a workforce IdP for people).
+- **Schema migrations:** add numbered files to `internal/store/migrations/`. `strongbox init` applies
+  pending ones in order, once, under a Postgres advisory lock.

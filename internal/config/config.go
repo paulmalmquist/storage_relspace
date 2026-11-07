@@ -1,0 +1,254 @@
+// Package config loads STRONGBOX_* settings from the environment. Production mode refuses unsafe settings.
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const (
+	KiB = 1024
+	MiB = 1024 * KiB
+	GiB = 1024 * MiB
+)
+
+type Config struct {
+	Env string // dev | test | production
+
+	DatabaseURL string
+
+	KMSBackend       string // local | gcp
+	KMSKeyName       string
+	LocalKeyringPath string
+
+	BlobBackend   string // local | gcs | s3
+	BlobLocalPath string
+	GCSBucket     string
+	GCSPrefix     string
+	S3Bucket      string
+	S3Prefix      string
+	S3EndpointURL string
+	S3Region      string
+
+	MaxBlobBytes         int64
+	ChunkSize            int
+	MaxRecordBytes       int
+	MaxBlobMetadataBytes int
+
+	DataKeyRotation time.Duration
+	DataKeyCacheTTL time.Duration
+
+	AuthMode            string // dev-hs256 | oidc
+	DevJWTSecret        string
+	JWTAudiences        []string
+	DelegationAudiences []string
+	OIDCIssuer          string
+	OIDCJWKSURL         string
+	JWTLeeway           time.Duration
+	MaxTokenLifetime    time.Duration
+
+	ExportControlledCategories []string
+	ConcealDenied              bool
+
+	RequireFIPS bool
+	ExposeDocs  bool
+	LogLevel    string
+}
+
+// Load reads the process environment.
+func Load() (*Config, error) { return FromLookup(os.LookupEnv) }
+
+// FromMap builds a config from explicit values (tests).
+func FromMap(m map[string]string) (*Config, error) {
+	return FromLookup(func(k string) (string, bool) { v, ok := m[k]; return v, ok })
+}
+
+type reader struct {
+	lookup func(string) (string, bool)
+	errs   []string
+}
+
+func (r *reader) str(name, def string) string {
+	if v, ok := r.lookup("STRONGBOX_" + name); ok {
+		return strings.TrimSpace(v)
+	}
+	return def
+}
+
+func (r *reader) integer(name string, def int64) int64 {
+	v := r.str(name, "")
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		r.errs = append(r.errs, fmt.Sprintf("STRONGBOX_%s must be an integer", name))
+		return def
+	}
+	return n
+}
+
+func (r *reader) boolean(name string, def bool) bool {
+	v := r.str(name, "")
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		r.errs = append(r.errs, fmt.Sprintf("STRONGBOX_%s must be true or false", name))
+		return def
+	}
+	return b
+}
+
+// list accepts a JSON array (["a","b"]) or a comma-separated string.
+func (r *reader) list(name string, def []string) []string {
+	v := r.str(name, "")
+	if v == "" {
+		return def
+	}
+	if strings.HasPrefix(v, "[") {
+		var out []string
+		if err := json.Unmarshal([]byte(v), &out); err != nil {
+			r.errs = append(r.errs, fmt.Sprintf("STRONGBOX_%s must be a JSON array of strings", name))
+			return def
+		}
+		return out
+	}
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func FromLookup(lookup func(string) (string, bool)) (*Config, error) {
+	r := &reader{lookup: lookup}
+	c := &Config{
+		Env:                        r.str("ENV", "dev"),
+		DatabaseURL:                normalizeDBURL(r.str("DATABASE_URL", "postgres://postgres@localhost:5432/strongbox")),
+		KMSBackend:                 r.str("KMS_BACKEND", "local"),
+		KMSKeyName:                 r.str("KMS_KEY_NAME", ""),
+		LocalKeyringPath:           r.str("LOCAL_KEYRING_PATH", ".strongbox/keyring.json"),
+		BlobBackend:                r.str("BLOB_BACKEND", "local"),
+		BlobLocalPath:              r.str("BLOB_LOCAL_PATH", ".strongbox/blobs"),
+		GCSBucket:                  r.str("GCS_BUCKET", ""),
+		GCSPrefix:                  r.str("GCS_PREFIX", "objects/"),
+		S3Bucket:                   r.str("S3_BUCKET", ""),
+		S3Prefix:                   r.str("S3_PREFIX", "objects/"),
+		S3EndpointURL:              r.str("S3_ENDPOINT_URL", ""),
+		S3Region:                   r.str("S3_REGION", ""),
+		MaxBlobBytes:               r.integer("MAX_BLOB_BYTES", 5*GiB),
+		ChunkSize:                  int(r.integer("CHUNK_SIZE", 64*KiB)),
+		MaxRecordBytes:             int(r.integer("MAX_RECORD_BYTES", 1*MiB)),
+		MaxBlobMetadataBytes:       int(r.integer("MAX_BLOB_METADATA_BYTES", 16*KiB)),
+		DataKeyRotation:            time.Duration(r.integer("DATA_KEY_ROTATION_SECONDS", 7*24*3600)) * time.Second,
+		DataKeyCacheTTL:            time.Duration(r.integer("DATA_KEY_CACHE_TTL_SECONDS", 300)) * time.Second,
+		AuthMode:                   r.str("AUTH_MODE", "dev-hs256"),
+		DevJWTSecret:               r.str("DEV_JWT_SECRET", ""),
+		JWTAudiences:               r.list("JWT_AUDIENCES", []string{"strongbox"}),
+		DelegationAudiences:        r.list("DELEGATION_AUDIENCES", []string{"strongbox"}),
+		OIDCIssuer:                 r.str("OIDC_ISSUER", "https://accounts.google.com"),
+		OIDCJWKSURL:                r.str("OIDC_JWKS_URL", "https://www.googleapis.com/oauth2/v3/certs"),
+		JWTLeeway:                  time.Duration(r.integer("JWT_LEEWAY_SECONDS", 30)) * time.Second,
+		MaxTokenLifetime:           time.Duration(r.integer("MAX_TOKEN_LIFETIME_SECONDS", 86400)) * time.Second,
+		ExportControlledCategories: r.list("EXPORT_CONTROLLED_CATEGORIES", []string{"SP-EXPT", "EXPT", "SP-EXPTR", "EXPTR"}),
+		ConcealDenied:              r.boolean("CONCEAL_DENIED_RESOURCES", true),
+		RequireFIPS:                r.boolean("REQUIRE_FIPS", false),
+		ExposeDocs:                 r.boolean("EXPOSE_DOCS", true),
+		LogLevel:                   r.str("LOG_LEVEL", "INFO"),
+	}
+	if len(r.errs) > 0 {
+		return nil, fmt.Errorf("invalid configuration: %s", strings.Join(r.errs, "; "))
+	}
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// normalizeDBURL accepts SQLAlchemy-style URLs from the Python era.
+func normalizeDBURL(u string) string {
+	for _, p := range []string{"postgresql+psycopg://", "postgresql+psycopg2://"} {
+		if strings.HasPrefix(u, p) {
+			return "postgresql://" + strings.TrimPrefix(u, p)
+		}
+	}
+	return u
+}
+
+func oneOf(v string, allowed ...string) bool {
+	for _, a := range allowed {
+		if v == a {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Config) Validate() error {
+	var problems []string
+	add := func(f string, a ...any) { problems = append(problems, fmt.Sprintf(f, a...)) }
+
+	if !oneOf(c.Env, "dev", "test", "production") {
+		add("env must be dev, test or production")
+	}
+	if !oneOf(c.KMSBackend, "local", "gcp") {
+		add("kms_backend must be local or gcp")
+	}
+	if !oneOf(c.BlobBackend, "local", "gcs", "s3") {
+		add("blob_backend must be local, gcs or s3")
+	}
+	if !oneOf(c.AuthMode, "dev-hs256", "oidc") {
+		add("auth_mode must be dev-hs256 or oidc")
+	}
+	if c.ChunkSize < 4*KiB || c.ChunkSize > 4*MiB {
+		add("chunk_size must be between 4 KiB and 4 MiB")
+	}
+	if !strings.HasPrefix(c.DatabaseURL, "postgres://") && !strings.HasPrefix(c.DatabaseURL, "postgresql://") {
+		add("database_url must be a postgres:// URL")
+	}
+	if c.KMSBackend == "gcp" && c.KMSKeyName == "" {
+		add("STRONGBOX_KMS_KEY_NAME is required when kms_backend=gcp")
+	}
+	if c.BlobBackend == "gcs" && c.GCSBucket == "" {
+		add("STRONGBOX_GCS_BUCKET is required when blob_backend=gcs")
+	}
+	if c.BlobBackend == "s3" && c.S3Bucket == "" {
+		add("STRONGBOX_S3_BUCKET is required when blob_backend=s3")
+	}
+	if c.AuthMode == "dev-hs256" && len(c.DevJWTSecret) < 32 {
+		add("STRONGBOX_DEV_JWT_SECRET must be at least 32 characters in dev-hs256 mode")
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("invalid configuration: %s", strings.Join(problems, "; "))
+	}
+
+	if c.Env == "production" {
+		if c.KMSBackend == "local" {
+			add("kms_backend=local (use gcp with an HSM-protected key)")
+		}
+		if c.AuthMode == "dev-hs256" {
+			add("auth_mode=dev-hs256 (use oidc)")
+		}
+		if c.BlobBackend == "local" {
+			add("blob_backend=local (use gcs or s3)")
+		}
+		if !c.RequireFIPS {
+			add("require_fips=false (CUI requires FIPS-validated crypto)")
+		}
+		if c.ExposeDocs {
+			add("expose_docs=true")
+		}
+		if len(problems) > 0 {
+			return fmt.Errorf("refusing to start in production: %s", strings.Join(problems, "; "))
+		}
+	}
+	return nil
+}

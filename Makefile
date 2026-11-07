@@ -1,41 +1,40 @@
-.PHONY: install lint typecheck test test-pg security check openapi run mcp docker docker-fips
+.PHONY: build build-fips test test-fips race lint vuln check run mcp docker
 
-PG_URL ?= postgresql+psycopg://postgres:strongbox@localhost:5432/strongbox_test
+PG_URL ?= postgres://postgres:strongbox@localhost:5432/strongbox_test?sslmode=disable
+BIN ?= bin/strongbox
 
-install:
-	pip install -e ".[dev,gcp,s3,mcp]"
+build:
+	go build -o $(BIN) ./cmd/strongbox
+
+build-fips:
+	GOFIPS140=v1.0.0 go build -o $(BIN) ./cmd/strongbox
+
+# Unit tests always run; integration tests need Postgres (PG_URL).
+test:
+	STRONGBOX_TEST_DATABASE_URL="$(PG_URL)" go test ./...
+
+# The whole suite in Go's enforced FIPS mode.
+test-fips:
+	STRONGBOX_TEST_DATABASE_URL="$(PG_URL)" GOFIPS140=v1.0.0 GODEBUG=fips140=only go test -count=1 ./...
+
+race:
+	STRONGBOX_TEST_DATABASE_URL="$(PG_URL)" go test -race -count=1 ./...
 
 lint:
-	ruff format --check src tests
-	ruff check src tests
+	test -z "$$(gofmt -l .)"
+	go vet ./...
+	go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 
-typecheck:
-	mypy
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-test:
-	pytest -q
+check: lint test test-fips vuln
 
-test-pg:
-	STRONGBOX_TEST_DATABASE_URL="$(PG_URL)" pytest -q
+run: build
+	$(BIN) init && $(BIN) serve -addr 127.0.0.1:8080
 
-security:
-	bandit -q -r src
-	pip-audit
-
-check: lint typecheck test
-
-openapi:
-	strongbox openapi > docs/openapi.json
-
-run:
-	strongbox init && strongbox serve --host 127.0.0.1 --port 8080
-
-mcp:
-	strongbox mcp --transport stdio
+mcp: build
+	$(BIN) mcp
 
 docker:
 	docker build -t strongbox:dev .
-
-docker-fips:
-	@test -n "$(BASE_IMAGE)" || (echo "set BASE_IMAGE to a FIPS-enabled Python base image" && exit 1)
-	docker build --build-arg FIPS=true --build-arg BASE_IMAGE=$(BASE_IMAGE) -t strongbox:fips .

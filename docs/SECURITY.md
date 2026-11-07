@@ -21,22 +21,26 @@ certification.
 | 3.8.4 Mark media with CUI markings | Banner stored per object, validated against the Registry format, returned in `X-Strongbox-Marking` | Train users to choose markings |
 | 3.13.8 Protect CUI in transit | TLS to Cloud Run; Cloud SQL `ENCRYPTED_ONLY`; HSTS | Internal load balancer and certs |
 | 3.13.10 Key management | Cloud KMS HSM keys, automatic rotation, separate app and infra keys, AAD-bound wrapping | Key access reviews |
-| 3.13.11 FIPS-validated cryptography | AES-256-GCM, HMAC-SHA-256, SHA-256 only; startup refuses non-FIPS crypto in production; KMS HSM | Build the FIPS image (below) |
+| 3.13.11 FIPS-validated cryptography | Go FIPS 140-3 module (`GOFIPS140`); AES-256-GCM, HMAC-SHA-256, SHA-256 only; startup refuses to run outside FIPS mode in production; KMS HSM | Confirm the module's CMVP status (below) |
 | 3.13.16 Protect CUI at rest | Application envelope encryption plus CMEK on bucket and database | — |
 
 ## FIPS-validated cryptography
 
-AES-256-GCM is an approved algorithm, but 3.13.11 requires a **validated module**. Two details matter:
+AES-256-GCM, HMAC-SHA-256 and SHA-256 are approved algorithms, but 3.13.11 requires a **validated module**.
+Strongbox uses Go's native FIPS 140-3 module, so no OpenSSL or cgo is involved:
 
-1. Python's `cryptography` and `psycopg[binary]` wheels bundle their own OpenSSL, which is not your
-   validated module. The `FIPS=true` Docker build compiles both from source against the base image's
-   OpenSSL.
-2. That base image's OpenSSL must have its FIPS provider enabled and hold a CMVP certificate. Check the
-   certificate for the exact OpenSSL version your image ships.
+1. The image is built with `GOFIPS140=v1.0.0`, which links the frozen module version the Go project
+   submitted (through Geomys) for CMVP validation and turns FIPS mode on by default. Check the CMVP list for that module's
+   certificate status before relying on it in your SSP; vendors have also validated rebuilds of it.
+2. Every IV is generated inside the module (`cipher.NewGCMWithRandomNonce`). That is required by
+   `GODEBUG=fips140=only`, which rejects non-approved algorithms and caller-chosen GCM IVs outright.
+   The full test suite, including the API, MCP server and Postgres paths, runs in that mode in CI.
+3. With `STRONGBOX_REQUIRE_FIPS=true` (mandatory in production) the process refuses to start unless the
+   module is active. `strongbox fips-check` reports the module version and exits non-zero otherwise.
 
-With `STRONGBOX_REQUIRE_FIPS=true` (mandatory in production), the process checks at startup that the
-linked OpenSSL is in FIPS mode and refuses to run otherwise. Run `strongbox fips-check` in CI against the
-built image. Key wrapping happens inside Cloud KMS HSMs, which are validated separately.
+The image sets `GODEBUG=fips140=on`. Switch to `fips140=only` once you've confirmed your GCP endpoints
+negotiate FIPS-approved TLS (they normally do). Key wrapping happens inside Cloud KMS HSMs, which are
+validated separately.
 
 ## Threat model
 
@@ -47,7 +51,7 @@ built image. Key wrapping happens inside Cloud KMS HSMs, which are validated sep
 | Insider edits a marking in the database to downgrade data | Marking is in the AAD; decryption fails and is audited |
 | Ciphertext swapped between rows or objects | Object/record id is in the AAD |
 | Rollback of a record to an older ciphertext | Version is in the AAD |
-| Truncated, reordered or extended object | STREAM construction with final-segment flag |
+| Truncated, reordered or extended object | Segment index and final-segment flag in each segment's AAD |
 | Foreign person probing for ITAR data | Denials are concealed as 404; list and query results are filtered |
 | Prompt injection through stored content | MCP tools exclude delete/shred; instructions tell the model to treat content as untrusted; writes are attributable and reversible |
 | CUI flowing into an unauthorized model context | Content withheld unless the agent is registered as inside an authorized LLM boundary |
@@ -66,7 +70,7 @@ exists. Periodically anchoring the chain head with a Cloud KMS asymmetric signat
 
 - [ ] Project inside an Assured Workloads folder for your regime; org policies restrict locations and require CMEK.
 - [ ] VPC Service Controls perimeter around KMS, Storage, Cloud SQL, Cloud Run and Artifact Registry.
-- [ ] Image built with `FIPS=true` from a validated base; `strongbox fips-check` passes in CI.
+- [ ] Image built from this repo's Dockerfile (`GOFIPS140=v1.0.0`); `strongbox fips-check` passes in CI.
 - [ ] `STRONGBOX_ENV=production` (enforces OIDC, Cloud KMS, Postgres, remote blobs, FIPS, docs off).
 - [ ] Container images mirrored into Artifact Registry inside the boundary (including the Cloud SQL proxy).
 - [ ] Admin and audit-reader principals assigned to different people.
