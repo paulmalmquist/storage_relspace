@@ -1,0 +1,11 @@
+project_id    = "my-itar-project"
+region        = "us-east4"
+network_id    = "projects/my-host-project/global/networks/cui-vpc"
+subnetwork_id = "projects/my-host-project/regions/us-east4/subnetworks/cui-run"
+bucket_name   = "my-org-strongbox-blobs"
+api_image     = "us-east4-docker.pkg.dev/my-itar-project/strongbox/strongbox:0.1.0-fips"
+
+api_invokers = [
+  "serviceAccount:mes-sync@my-itar-project.iam.gserviceaccount.com",
+  "serviceAccount:telemetry-ingest@my-itar-project.iam.gserviceaccount.com",
+]
