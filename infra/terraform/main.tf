@@ -78,8 +78,10 @@ resource "google_logging_project_bucket_config" "audit" {
   project        = var.project_id
   location       = var.region
   bucket_id      = "${var.name}-audit"
-  retention_days = 2555 # ~7 years; set to your records schedule
-  locked         = false # flip to true once retention is confirmed; locking is irreversible
+  # ~7 years; set to your records schedule. Flip `locked` to true once retention is
+  # confirmed: locking is irreversible.
+  retention_days = 2555
+  locked         = false
 }
 
 resource "google_logging_project_sink" "audit" {

@@ -64,7 +64,7 @@ class GoogleIdTokenSource(TokenSource):
             import google.oauth2.id_token
             import jwt
 
-            self._token = google.oauth2.id_token.fetch_id_token(
+            self._token = google.oauth2.id_token.fetch_id_token(  # type: ignore[no-untyped-call,unused-ignore]
                 google.auth.transport.requests.Request(), self._audience
             )
             self._exp = float(jwt.decode(self._token, options={"verify_signature": False})["exp"])

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -19,7 +20,37 @@ def _db() -> Database:
     return Database(s.database_url)
 
 
-def cmd_init(_: argparse.Namespace) -> int:
+def _wait_for_db(db: Database, seconds: int) -> None:
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            db.ping()
+            return
+        except Exception:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(2)
+
+
+def _shutdown_sidecar(url: str) -> None:
+    """Ask a sidecar (e.g. Cloud SQL Auth Proxy /quitquitquit) to exit so a Cloud Run job can finish."""
+    import urllib.request
+
+    try:
+        urllib.request.urlopen(urllib.request.Request(url, method="POST"), timeout=5)  # noqa: S310  # nosec B310
+    except OSError as exc:
+        print(f"sidecar shutdown request failed: {exc}", file=sys.stderr)
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    try:
+        return _init(args)
+    finally:
+        if args.shutdown_url:
+            _shutdown_sidecar(args.shutdown_url)
+
+
+def _init(args: argparse.Namespace) -> int:
     s = get_settings()
     if s.kms_backend is KmsBackend.LOCAL and not s.local_keyring_path.exists():
         LocalKeyProvider.create(s.local_keyring_path)
@@ -28,7 +59,9 @@ def cmd_init(_: argparse.Namespace) -> int:
         s.blob_local_path.mkdir(parents=True, exist_ok=True)
     if s.database_url.startswith("sqlite:///"):
         Path(s.database_url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
-    _db().create_all()
+    db = _db()
+    _wait_for_db(db, args.wait)
+    db.create_all()
     print("schema ready")
     return 0
 
@@ -145,9 +178,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="strongbox", description="CUI-grade blob and structured data store")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("init", help="create schema (and a dev keyring when using local KMS)").set_defaults(
-        fn=cmd_init
+    i = sub.add_parser("init", help="create schema (and a dev keyring when using local KMS)")
+    i.add_argument(
+        "--wait", type=int, default=60, help="seconds to wait for the database to accept connections"
     )
+    i.add_argument("--shutdown-url", help="POST here when done (e.g. Cloud SQL proxy /quitquitquit)")
+    i.set_defaults(fn=cmd_init)
 
     k = sub.add_parser("keyring", help="manage the local development keyring")
     k.add_argument("action", choices=["create", "rotate"])

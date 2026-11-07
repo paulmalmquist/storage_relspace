@@ -123,7 +123,7 @@ resource "google_cloud_run_v2_job" "migrate" {
 
       containers {
         image = var.api_image
-        args  = ["init"]
+        args  = ["init", "--wait", "120", "--shutdown-url", "http://127.0.0.1:9091/quitquitquit"]
 
         dynamic "env" {
           for_each = local.common_env

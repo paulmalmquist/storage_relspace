@@ -131,7 +131,7 @@ class GcsBlobBackend:
     def __init__(self, bucket_name: str, prefix: str = "objects/", bucket: Any | None = None) -> None:
         if bucket is None:
             try:
-                from google.cloud import storage
+                from google.cloud import storage  # type: ignore[attr-defined,unused-ignore]
             except ImportError as exc:  # pragma: no cover
                 raise ConfigurationError("install strongbox[gcp] to use GCS") from exc
             bucket = storage.Client().bucket(bucket_name)
