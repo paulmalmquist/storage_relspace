@@ -85,3 +85,48 @@ variable "deletion_protection" {
   type    = bool
   default = true
 }
+
+variable "app_env" {
+  description = "Environment this deployment serves (dev, test, staging, prod). Requests name an app; the environment comes from here, never from the request."
+  type        = string
+  default     = "prod"
+  validation {
+    condition     = contains(["dev", "test", "staging", "prod"], var.app_env)
+    error_message = "app_env must be dev, test, staging or prod."
+  }
+}
+
+variable "api_min_instances" {
+  type    = number
+  default = 1
+}
+
+variable "api_max_instances" {
+  description = "Upper bound on API instances. Together with db_pool_size it bounds database connections."
+  type        = number
+  default     = 10
+}
+
+variable "api_concurrency" {
+  description = "Concurrent requests per API instance. Keep it a small multiple of db_pool_size: requests beyond the pool wait for a connection, bounded by the statement timeout."
+  type        = number
+  default     = 40
+}
+
+variable "db_pool_size" {
+  description = "pgx pool size per API instance (STRONGBOX_DB_MAX_CONNS)."
+  type        = number
+  default     = 10
+}
+
+variable "db_max_connections" {
+  description = "Cloud SQL max_connections. Must exceed api_max_instances * db_pool_size plus headroom for migrations, admin and the proxy."
+  type        = number
+  default     = 200
+}
+
+variable "blob_noncurrent_retention_days" {
+  description = "Days a deleted or overwritten object version is kept before the bucket removes it (see docs/RETENTION.md)."
+  type        = number
+  default     = 30
+}

@@ -9,15 +9,15 @@ certification.
 
 | Requirement | How Strongbox addresses it | Your part |
 |---|---|---|
-| 3.1.1 / 3.1.2 Limit access to authorized users and transactions | OIDC authentication on every call; per-action scopes; deny by default | Register principals; review them |
+| 3.1.1 / 3.1.2 Limit access to authorized users and transactions | OIDC authentication on every call; per-action scopes; app membership and sharing (private by default) checked by the service and again by PostgreSQL row-level security under a restricted runtime role; deny by default | Register principals and app members; review them |
 | 3.1.3 Control the flow of CUI | ABAC on markings (categories, LDCs, NOFORN, export control); agent content withholding; marking roll-up on responses | Approve LLM boundaries; set network egress controls |
 | 3.1.4 Separation of duties | Admins cannot edit their own principal; MCP identity has no KMS or data-store access | Assign admin and audit roles to different people |
-| 3.1.5 Least privilege | Separate service accounts for API and MCP; KMS key-level IAM; bucket-level IAM | Keep `api_invokers` minimal |
+| 3.1.5 Least privilege | Separate service accounts for API, MCP and migrations; the API's database login cannot bypass RLS, alter schema, truncate, or change owners and apps (checked at startup); KMS key-level IAM; bucket-level IAM | Keep `api_invokers` minimal; revoke `cloudsqlsuperuser` from the migration login after bootstrap |
 | 3.3.1 / 3.3.2 Audit and attributable actions | Every decision recorded with actor, on-behalf-of, resource, marking, reason; Cloud Audit Logs for KMS, Storage and SQL | Review logs; set retention |
-| 3.3.4 Alert on audit failure | Audit writes are fail-closed (request fails) | Alert on 5xx and on `audit-verify` failures |
+| 3.3.4 Alert on audit failure | Audit events are written in the mutation's transaction, so a change cannot commit without its event | Alert on 5xx, audit backlog and `audit-verify` failures |
 | 3.3.8 Protect audit information | SHA-256 hash chain with `strongbox audit-verify`; copy in a dedicated log bucket | Lock the log bucket; restrict `audit:read` |
 | 3.5.1 / 3.5.2 Identify and authenticate | JWT signature, issuer, audience, expiry and lifetime checks; Google ID tokens for workloads | MFA at the IdP for people |
-| 3.8.3 Sanitize media | Crypto-shredding destroys the wrapped data key, making all ciphertext copies unrecoverable | Define when shredding is required |
+| 3.8.3 Sanitize media | Shredding removes a blob's wrapped data key from the live database at once and its ciphertext through the outbox; copies in backups and object versions age out on the schedules in [RETENTION.md](RETENTION.md) | Set backup and version retention to match your sanitization requirement |
 | 3.8.4 Mark media with CUI markings | Banner stored per object, validated against the Registry format, returned in `X-Strongbox-Marking` | Train users to choose markings |
 | 3.13.8 Protect CUI in transit | TLS to Cloud Run; Cloud SQL `ENCRYPTED_ONLY`; HSTS | Internal load balancer and certs |
 | 3.13.10 Key management | Cloud KMS HSM keys, automatic rotation, separate app and infra keys, AAD-bound wrapping | Key access reviews |
@@ -58,9 +58,14 @@ validated separately.
 | Compromised MCP server | Holds no KMS, bucket or database permissions; can act only within the intersection of its identity and the user's |
 | Forged or replayed tokens | Signature, issuer, audience, expiry, maximum lifetime; short-lived Google ID tokens |
 | Audit tampering | Hash chain detects edits, deletions and truncation; independent copy in Cloud Logging |
-| Retry storms creating duplicates | Idempotency keys |
+| Retry storms creating duplicates | Operation receipts per (app, subject, actor, operation ID), resolved before preconditions |
+| One app reading another's data | App column in every key and foreign key; RLS restrictive policy; app-bound AAD, object keys, cursors and index tokens; app IDs in requests select, never grant |
+| A forgotten filter or wrong ID in service code | RLS returns no rows (or raises 42501 without context); tests run as the restricted runtime login |
+| A compromised API process | Not prevented by RLS (the process can set any context). Limited by what its identity reaches: KMS IAM, the bucket, VPC Service Controls; the audit sink is outside its reach |
+| One app or caller exhausting the service | Per-app quotas in the database; per-app and per-subject rate limits and in-flight caps per instance; bounded pool waits |
 
-**Known limits.** Blind indexes reveal equality and frequency to someone with database access. Plaintext
+**Known limits.** The database role boundary protects against bugs in the service, not against a
+compromised service: see [ARCHITECTURE.md](ARCHITECTURE.md#trust-boundary). Blind indexes reveal equality and frequency to someone with database access. Plaintext
 from non-final segments is released as each segment authenticates, so a consumer that must not act on a
 partial object should buffer. The audit hash chain is tamper-evident, not tamper-proof: an attacker with
 write access to both the table and the head row could rewrite history, which is why the Cloud Logging copy
@@ -72,10 +77,12 @@ exists. Periodically anchoring the chain head with a Cloud KMS asymmetric signat
 - [ ] VPC Service Controls perimeter around KMS, Storage, Cloud SQL, Cloud Run and Artifact Registry.
 - [ ] Image built from this repo's Dockerfile (`GOFIPS140=v1.0.0`); `strongbox fips-check` passes in CI.
 - [ ] `STRONGBOX_ENV=production` (enforces OIDC, Cloud KMS, Postgres, remote blobs, FIPS, docs off).
+- [ ] `strongbox db check-roles` passes for the API login; the migration login no longer holds `cloudsqlsuperuser`.
+- [ ] Backup, PITR and object-version retention set to your sanitization schedule ([RETENTION.md](RETENTION.md)).
 - [ ] Container images mirrored into Artifact Registry inside the boundary (including the Cloud SQL proxy).
 - [ ] Admin and audit-reader principals assigned to different people.
 - [ ] Every agent principal reviewed; `llm_boundary_authorized` set only when its model runs inside the boundary
       (for example open-weight models on GKE in the same folder, or a managed endpoint confirmed in scope for your regime).
 - [ ] Log bucket retention set, then locked.
 - [ ] Alerts on 5xx rates, `integrity_violation` responses, audit-verify failures and KMS permission errors.
-- [ ] Cloud Armor or rate limits in front of the API (auth failures are audited, so floods grow the log).
+- [ ] Per-app quotas set for every app (`strongbox admin quota set`).
