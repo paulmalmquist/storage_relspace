@@ -1,12 +1,14 @@
-// Package audit is a tamper-evident audit log (NIST SP 800-171 3.3.1, 3.3.2, 3.3.8).
+// Package audit is a tamper-evident decision log: one SHA-256 hash chain per (app, stripe) plus a
+// global chain for events outside any app.
 //
-// Every authorization decision, including denials and authentication failures, becomes one event.
-// Events form a SHA-256 hash chain: each event's hash covers the previous hash and the event's
-// canonical JSON, so editing, deleting or reordering stored events breaks Verify from that point on.
-// Events are also logged as structured JSON (audit=true) for an independent copy in Cloud Logging.
+// Events are appended inside the caller's transaction, so a mutation and its audit event commit or
+// roll back together. Within a chain, sequence order equals commit order: the head row is locked
+// FOR UPDATE until the writing transaction commits, so the next writer cannot take a sequence
+// number before the previous one is durable. That makes "deliver everything after seq N" a correct
+// cursor for exporting committed events (see Deliver).
 //
-// Events carry identifiers and markings only, never CUI content, filenames or metadata values.
-// Writes are fail-closed: if the event cannot be written, the request fails.
+// Stripes bound write contention: a busy app's mutations spread over N independent chains instead
+// of serializing on one head row.
 package audit
 
 import (
@@ -15,19 +17,29 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/paulmalmquist/storage_relspace/internal/auth"
+	"github.com/paulmalmquist/storage_relspace/internal/store"
 )
 
-const Genesis = "0000000000000000000000000000000000000000000000000000000000000000"
+const (
+	Genesis     = "0000000000000000000000000000000000000000000000000000000000000000"
+	GlobalChain = "global"
+	formatV2    = 2 // canonical form includes chain and app
+)
 
 type Event struct {
+	Chain        string         `json:"chain"`
+	App          *string        `json:"app"`
 	Seq          int64          `json:"seq"`
 	TS           string         `json:"ts"`
 	RequestID    *string        `json:"request_id"`
@@ -41,17 +53,22 @@ type Event struct {
 	Decision     string         `json:"decision"`
 	Reason       string         `json:"reason"`
 	Details      map[string]any `json:"details"`
+	Format       int            `json:"format"`
 	PrevHash     string         `json:"prev_hash,omitempty"`
 	Hash         string         `json:"hash,omitempty"`
 }
 
-// canonical is the hashed form: sorted keys, no HTML escaping, chain fields excluded.
+// canonical is the hashed form: sorted keys, no HTML escaping, chain linkage excluded.
+// Format 1 (events written before app scoping) predates the chain and app fields.
 func canonical(e Event) []byte {
 	m := map[string]any{
 		"seq": e.Seq, "ts": e.TS, "request_id": e.RequestID, "actor": e.Actor, "actor_kind": e.ActorKind,
 		"on_behalf_of": e.OnBehalfOf, "action": e.Action, "resource_type": e.ResourceType,
 		"resource_id": e.ResourceID, "marking": e.Marking, "decision": e.Decision, "reason": e.Reason,
 		"details": normalize(e.Details),
+	}
+	if e.Format >= formatV2 {
+		m["chain"], m["app"], m["format"] = e.Chain, e.App, e.Format
 	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -71,14 +88,16 @@ func normalize(d map[string]any) map[string]any {
 	return out
 }
 
-func chain(prev string, e Event) string {
+func link(prev string, e Event) string {
 	h := sha256.New()
 	h.Write([]byte(prev))
 	h.Write(canonical(e))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// Entry is what callers record. App selects the chain; empty means the global chain.
 type Entry struct {
+	App          string
 	Principal    *auth.Principal // nil for unauthenticated callers
 	Anonymous    string          // subject to record when Principal is nil
 	Action       string
@@ -91,9 +110,12 @@ type Entry struct {
 	Details      map[string]any
 }
 
-type Log struct{ db *pgxpool.Pool }
+type Log struct {
+	db      *store.DB
+	stripes int
+}
 
-func New(db *pgxpool.Pool) *Log { return &Log{db: db} }
+func New(db *store.DB, stripes int) *Log { return &Log{db: db, stripes: max(1, stripes)} }
 
 func optional(s string) *string {
 	if s == "" {
@@ -102,14 +124,24 @@ func optional(s string) *string {
 	return &s
 }
 
-// Record appends one event. The chain head row is locked (SELECT ... FOR UPDATE), so concurrent
-// writers across replicas serialize correctly.
-func (l *Log) Record(ctx context.Context, in Entry) (int64, error) {
-	e := Event{
-		RequestID: optional(in.RequestID), Action: in.Action, ResourceType: in.ResourceType,
-		ResourceID: optional(in.ResourceID), Marking: optional(in.Marking), Decision: in.Decision,
-		Reason: truncate(in.Reason, 512), Details: normalize(in.Details),
+// ChainFor picks the stripe for an event. Events about one resource share a stripe, so a
+// resource's history reads in commit order from one chain.
+func (l *Log) ChainFor(app, key string) string {
+	if app == "" {
+		return GlobalChain
 	}
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	return fmt.Sprintf("app:%s:%d", app, int(h.Sum32()%uint32(l.stripes)))
+}
+
+func (l *Log) event(in Entry) Event {
+	e := Event{
+		App: optional(in.App), RequestID: optional(in.RequestID), Action: in.Action, ResourceType: in.ResourceType,
+		ResourceID: optional(in.ResourceID), Marking: optional(in.Marking), Decision: in.Decision,
+		Reason: truncate(in.Reason, 512), Details: normalize(in.Details), Format: formatV2,
+	}
+	e.Chain = l.ChainFor(in.App, firstNonEmpty(in.ResourceID, in.RequestID))
 	switch p := in.Principal; {
 	case p == nil:
 		e.Actor, e.ActorKind = truncate(firstNonEmpty(in.Anonymous, "anonymous"), 255), "anonymous"
@@ -118,66 +150,149 @@ func (l *Log) Record(ctx context.Context, in Entry) (int64, error) {
 	default:
 		e.Actor, e.ActorKind = p.Subject, string(p.Kind)
 	}
-	// Detach from request cancellation: a client disconnect must not leave a decision unrecorded.
-	ctx = context.WithoutCancel(ctx)
-	err := pgx.BeginFunc(ctx, l.db, func(tx pgx.Tx) error {
-		var seq int64
-		var head string
-		if err := tx.QueryRow(ctx, `SELECT seq, hash FROM audit_head WHERE id = 1 FOR UPDATE`).Scan(&seq, &head); err != nil {
-			return err
-		}
-		e.Seq = seq + 1
-		e.TS = time.Now().UTC().Format("2006-01-02T15:04:05.000000Z07:00")
-		e.PrevHash = head
-		e.Hash = chain(head, e)
-		details, _ := json.Marshal(e.Details)
-		if _, err := tx.Exec(ctx, `INSERT INTO audit_events (seq, ts, request_id, actor, actor_kind, on_behalf_of,
-			action, resource_type, resource_id, marking, decision, reason, details, prev_hash, hash)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-			e.Seq, e.TS, e.RequestID, e.Actor, e.ActorKind, e.OnBehalfOf, e.Action, e.ResourceType,
-			e.ResourceID, e.Marking, e.Decision, e.Reason, details, e.PrevHash, e.Hash); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `UPDATE audit_head SET seq = $1, hash = $2 WHERE id = 1`, e.Seq, e.Hash)
-		return err
-	})
-	if err != nil {
-		return 0, err
-	}
-	slog.Info("audit", "audit", true, "seq", e.Seq, "actor", e.Actor, "on_behalf_of", e.OnBehalfOf,
-		"action", e.Action, "resource_type", e.ResourceType, "resource_id", e.ResourceID, "marking", e.Marking,
-		"decision", e.Decision, "reason", e.Reason, "request_id", e.RequestID, "hash", e.Hash)
-	return e.Seq, nil
+	return e
 }
 
-type VerifyResult struct {
+// Append writes one event inside tx. The transaction's scope must match the entry: an app chain in
+// app or worker mode for that app, the global chain in global mode. RLS enforces it.
+func (l *Log) Append(ctx context.Context, tx pgx.Tx, in Entry) (Event, error) {
+	e := l.event(in)
+	var seq int64
+	var head string
+	err := tx.QueryRow(ctx, `SELECT seq, hash FROM audit_heads WHERE chain = $1 FOR UPDATE`, e.Chain).Scan(&seq, &head)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// First event on this chain. ON CONFLICT covers a concurrent first writer; then lock it.
+		if _, err = tx.Exec(ctx, `INSERT INTO audit_heads (chain, app, seq, hash) VALUES ($1, $2, 0, $3)
+			ON CONFLICT (chain) DO NOTHING`, e.Chain, e.App, Genesis); err != nil {
+			return e, err
+		}
+		err = tx.QueryRow(ctx, `SELECT seq, hash FROM audit_heads WHERE chain = $1 FOR UPDATE`, e.Chain).Scan(&seq, &head)
+	}
+	if err != nil {
+		return e, err
+	}
+	e.Seq = seq + 1
+	e.TS = time.Now().UTC().Format("2006-01-02T15:04:05.000000Z07:00")
+	e.PrevHash = head
+	e.Hash = link(head, e)
+	details, _ := json.Marshal(e.Details)
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_events (chain, app, format, seq, ts, request_id, actor, actor_kind,
+		on_behalf_of, action, resource_type, resource_id, marking, decision, reason, details, prev_hash, hash)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		e.Chain, e.App, e.Format, e.Seq, e.TS, e.RequestID, e.Actor, e.ActorKind, e.OnBehalfOf, e.Action,
+		e.ResourceType, e.ResourceID, e.Marking, e.Decision, e.Reason, details, e.PrevHash, e.Hash); err != nil {
+		return e, err
+	}
+	_, err = tx.Exec(ctx, `UPDATE audit_heads SET seq = $1, hash = $2 WHERE chain = $3`, e.Seq, e.Hash, e.Chain)
+	return e, err
+}
+
+// Standalone records an event in its own transaction: denials and errors, whose request
+// transaction rolls back. It detaches from request cancellation so a client disconnect cannot
+// leave a decision unrecorded. An app that does not exist is recorded on the global chain.
+func (l *Log) Standalone(ctx context.Context, in Entry) error {
+	ctx = context.WithoutCancel(ctx)
+	subject, actor := "anonymous", "anonymous"
+	if in.Principal != nil {
+		subject, actor = in.Principal.Subject, firstNonEmpty(in.Principal.Actor, in.Principal.Subject)
+	}
+	if in.App != "" && store.ValidApp(in.App) {
+		err := l.db.Run(ctx, store.Scope{App: in.App, Subject: subject, Actor: actor, Mode: store.ModeApp}, func(tx pgx.Tx) error {
+			_, err := l.Append(ctx, tx, in)
+			return err
+		})
+		var pg *pgconn.PgError
+		if err == nil || !errors.As(err, &pg) || pg.Code != "23503" {
+			return err
+		}
+	}
+	if in.App != "" {
+		in.Details = withDetail(in.Details, "requested_app", in.App)
+		in.App = ""
+	}
+	return l.db.Run(ctx, store.Scope{Subject: subject, Actor: actor, Mode: store.ModeGlobal}, func(tx pgx.Tx) error {
+		_, err := l.Append(ctx, tx, in)
+		return err
+	})
+}
+
+func withDetail(d map[string]any, k string, v any) map[string]any {
+	out := map[string]any{}
+	for kk, vv := range d {
+		out[kk] = vv
+	}
+	out[k] = v
+	return out
+}
+
+type ChainResult struct {
+	Chain           string `json:"chain"`
 	OK              bool   `json:"ok"`
 	Checked         int64  `json:"checked"`
 	HeadSeq         int64  `json:"head_seq"`
 	FirstInvalidSeq *int64 `json:"first_invalid_seq"`
 }
 
-// Verify walks the whole chain and checks it against the head row.
-func (l *Log) Verify(ctx context.Context) (VerifyResult, error) {
-	var headSeq int64
-	var headHash string
-	if err := l.db.QueryRow(ctx, `SELECT seq, hash FROM audit_head WHERE id = 1`).Scan(&headSeq, &headHash); err != nil {
+type VerifyResult struct {
+	OK     bool          `json:"ok"`
+	Chains []ChainResult `json:"chains"`
+}
+
+// Verify walks every chain visible in tx's scope (one app's stripes, or the global chain) and
+// checks each against its head row.
+func (l *Log) Verify(ctx context.Context, tx pgx.Tx) (VerifyResult, error) {
+	rows, err := tx.Query(ctx, `SELECT chain, seq, hash FROM audit_heads ORDER BY chain`)
+	if err != nil {
 		return VerifyResult{}, err
 	}
+	type head struct {
+		chain, hash string
+		seq         int64
+	}
+	heads, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (head, error) {
+		var h head
+		return h, r.Scan(&h.chain, &h.seq, &h.hash)
+	})
+	if err != nil {
+		return VerifyResult{}, err
+	}
+	out := VerifyResult{OK: true, Chains: []ChainResult{}}
+	for _, h := range heads {
+		r, err := verifyChain(ctx, tx, h.chain, h.seq, h.hash)
+		if err != nil {
+			return out, err
+		}
+		out.OK = out.OK && r.OK
+		out.Chains = append(out.Chains, r)
+	}
+	return out, nil
+}
+
+// VerifyChain checks one chain against its head row.
+func VerifyChain(ctx context.Context, tx pgx.Tx, chain string) (ChainResult, error) {
+	var seq int64
+	var hash string
+	if err := tx.QueryRow(ctx, `SELECT seq, hash FROM audit_heads WHERE chain = $1`, chain).Scan(&seq, &hash); err != nil {
+		return ChainResult{}, err
+	}
+	return verifyChain(ctx, tx, chain, seq, hash)
+}
+
+func verifyChain(ctx context.Context, tx pgx.Tx, chain string, headSeq int64, headHash string) (ChainResult, error) {
 	prev, last, checked := Genesis, int64(0), int64(0)
-	bad := func(seq int64) (VerifyResult, error) {
-		return VerifyResult{OK: false, Checked: checked, HeadSeq: headSeq, FirstInvalidSeq: &seq}, nil
+	bad := func(seq int64) (ChainResult, error) {
+		return ChainResult{Chain: chain, Checked: checked, HeadSeq: headSeq, FirstInvalidSeq: &seq}, nil
 	}
 	for {
-		events, err := l.List(ctx, last, 1000)
+		events, err := List(ctx, tx, chain, last, 1000)
 		if err != nil {
-			return VerifyResult{}, err
+			return ChainResult{}, err
 		}
 		if len(events) == 0 {
 			break
 		}
 		for _, e := range events {
-			if e.Seq != last+1 || e.PrevHash != prev || chain(prev, e) != e.Hash {
+			if e.Seq != last+1 || e.PrevHash != prev || link(prev, e) != e.Hash {
 				return bad(e.Seq)
 			}
 			prev, last = e.Hash, e.Seq
@@ -187,28 +302,64 @@ func (l *Log) Verify(ctx context.Context) (VerifyResult, error) {
 	if last != headSeq || prev != headHash {
 		return bad(last + 1)
 	}
-	return VerifyResult{OK: true, Checked: checked, HeadSeq: headSeq}, nil
+	return ChainResult{Chain: chain, OK: true, Checked: checked, HeadSeq: headSeq}, nil
 }
 
-func (l *Log) List(ctx context.Context, afterSeq int64, limit int) ([]Event, error) {
+// List returns events of one chain after afterSeq, in order.
+func List(ctx context.Context, tx pgx.Tx, chain string, afterSeq int64, limit int) ([]Event, error) {
 	limit = max(1, min(limit, 1000))
-	rows, err := l.db.Query(ctx, `SELECT seq, ts, request_id, actor, actor_kind, on_behalf_of, action, resource_type,
-		resource_id, marking, decision, reason, details, prev_hash, hash FROM audit_events
-		WHERE seq > $1 ORDER BY seq LIMIT $2`, afterSeq, limit)
+	rows, err := tx.Query(ctx, `SELECT chain, app, format, seq, ts, request_id, actor, actor_kind, on_behalf_of, action,
+		resource_type, resource_id, marking, decision, reason, details, prev_hash, hash FROM audit_events
+		WHERE chain = $1 AND seq > $2 ORDER BY seq LIMIT $3`, chain, afterSeq, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Event
-	for rows.Next() {
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (Event, error) {
 		var e Event
-		if err := rows.Scan(&e.Seq, &e.TS, &e.RequestID, &e.Actor, &e.ActorKind, &e.OnBehalfOf, &e.Action,
-			&e.ResourceType, &e.ResourceID, &e.Marking, &e.Decision, &e.Reason, &e.Details, &e.PrevHash, &e.Hash); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
+		err := r.Scan(&e.Chain, &e.App, &e.Format, &e.Seq, &e.TS, &e.RequestID, &e.Actor, &e.ActorKind, &e.OnBehalfOf,
+			&e.Action, &e.ResourceType, &e.ResourceID, &e.Marking, &e.Decision, &e.Reason, &e.Details, &e.PrevHash, &e.Hash)
+		return e, err
+	})
+}
+
+// Chains lists the chains visible in tx's scope.
+func Chains(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	rows, err := tx.Query(ctx, `SELECT chain FROM audit_heads ORDER BY chain`)
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// Deliver exports committed events of one chain to the structured log (Cloud Logging) and advances
+// the chain's delivery cursor in the same transaction. Delivery is at-least-once: a crash after
+// logging and before commit re-emits the batch. tx must be scoped to the chain's app (worker mode)
+// or global mode for the global chain. Returns the number of events emitted.
+func Deliver(ctx context.Context, tx pgx.Tx, chain string, app *string, limit int) (int, error) {
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_delivery (chain, app, delivered_seq) VALUES ($1, $2, 0)
+		ON CONFLICT (chain) DO NOTHING`, chain, app); err != nil {
+		return 0, err
+	}
+	var delivered int64
+	err := tx.QueryRow(ctx, `SELECT delivered_seq FROM audit_delivery WHERE chain = $1 FOR UPDATE SKIP LOCKED`, chain).Scan(&delivered)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil // another worker holds this chain
+	}
+	if err != nil {
+		return 0, err
+	}
+	events, err := List(ctx, tx, chain, delivered, limit)
+	if err != nil || len(events) == 0 {
+		return 0, err
+	}
+	for _, e := range events {
+		slog.Info("audit", "audit", true, "chain", e.Chain, "app", e.App, "seq", e.Seq, "ts", e.TS, "actor", e.Actor,
+			"on_behalf_of", e.OnBehalfOf, "action", e.Action, "resource_type", e.ResourceType, "resource_id", e.ResourceID,
+			"marking", e.Marking, "decision", e.Decision, "reason", e.Reason, "request_id", e.RequestID, "hash", e.Hash)
+	}
+	_, err = tx.Exec(ctx, `UPDATE audit_delivery SET delivered_seq = $1, updated_at = now() WHERE chain = $2`,
+		events[len(events)-1].Seq, chain)
+	return len(events), err
 }
 
 func truncate(s string, n int) string {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -24,7 +25,23 @@ var Scopes = map[string]bool{
 	"blobs:read": true, "blobs:write": true, "blobs:delete": true,
 	"records:read": true, "records:write": true, "records:delete": true,
 	"collections:admin": true, "audit:read": true, "principals:admin": true,
-	"delegate": true, // may act on behalf of another principal (X-On-Behalf-Of)
+	"apps:manage": true, // manage app membership (also requires the app's admin role)
+	"delegate":    true, // may act on behalf of another principal (X-On-Behalf-Of)
+}
+
+// neverDelegated are scopes an intersection never carries, even when both sides hold "*".
+var neverDelegated = []string{"delegate", "principals:admin"}
+
+// concrete expands "*" to the named scopes so set algebra cannot resurrect a removed scope.
+func concrete(s Set) Set {
+	if !s[All] {
+		return copySet(s)
+	}
+	out := Set{}
+	for k := range Scopes {
+		out[k] = true
+	}
+	return out
 }
 
 type Kind string
@@ -100,9 +117,10 @@ func (p *Principal) HasScope(s string) bool { return p.Scopes.Has(s) }
 // An agent can never do more than the person it acts for, nor more than the agent itself is cleared for.
 // U.S.-person status requires both, so a non-U.S. person cannot borrow an agent's clearance.
 func (p *Principal) DelegatedTo(actor *Principal) *Principal {
-	scopes := intersect(p.Scopes, actor.Scopes)
-	delete(scopes, "delegate")
-	delete(scopes, "principals:admin")
+	scopes := intersect(concrete(p.Scopes), concrete(actor.Scopes))
+	for _, s := range neverDelegated {
+		delete(scopes, s)
+	}
 	kind := p.Kind
 	if actor.Kind == KindAgent {
 		kind = KindAgent
@@ -213,7 +231,15 @@ func (r *Registry) Get(ctx context.Context, subject string) (*Principal, error) 
 	}, nil
 }
 
-func (r *Registry) Put(ctx context.Context, s Spec) error {
+// Execer is a pool or a transaction.
+type Execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func (r *Registry) Put(ctx context.Context, s Spec) error { return r.PutWith(ctx, r.db, s) }
+
+// PutWith writes through q, so callers can commit the change with its audit event.
+func (r *Registry) PutWith(ctx context.Context, q Execer, s Spec) error {
 	if err := s.Validate(); err != nil {
 		return err
 	}
@@ -221,7 +247,7 @@ func (r *Registry) Put(ctx context.Context, s Spec) error {
 	if s.DisplayName != "" {
 		name = s.DisplayName
 	}
-	_, err := r.db.Exec(ctx, `INSERT INTO principals (subject, kind, display_name, scopes, us_person, cui_access,
+	_, err := q.Exec(ctx, `INSERT INTO principals (subject, kind, display_name, scopes, us_person, cui_access,
 		cui_categories, dissemination, llm_boundary_authorized, disabled, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now(), now())
 		ON CONFLICT (subject) DO UPDATE SET kind=EXCLUDED.kind, display_name=EXCLUDED.display_name,

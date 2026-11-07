@@ -12,6 +12,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/paulmalmquist/storage_relspace/internal/api"
+	"github.com/paulmalmquist/storage_relspace/internal/audit"
 	"github.com/paulmalmquist/storage_relspace/internal/mcpserver"
 	"github.com/paulmalmquist/storage_relspace/internal/testenv"
 	"github.com/paulmalmquist/storage_relspace/pkg/client"
@@ -30,7 +31,7 @@ func setup(t *testing.T) *fixture {
 	srv := httptest.NewServer(api.New(env.C))
 	t.Cleanup(srv.Close)
 	ctx := context.Background()
-	svc := client.New(srv.URL, client.StaticToken(testenv.Token(t, "svc-mes@rel.test")))
+	svc := client.New(srv.URL, client.StaticToken(testenv.Token(t, "svc-mes@rel.test"))).App(testenv.AppID)
 	var schema map[string]any
 	_ = json.Unmarshal([]byte(`{"type":"object","required":["part_number"],"properties":{"part_number":{"type":"string"},"status":{"type":"string"}}}`), &schema)
 	for _, c := range []client.CollectionSpec{
@@ -41,13 +42,14 @@ func setup(t *testing.T) *fixture {
 			t.Fatal(err)
 		}
 	}
-	if _, err := svc.CreateRecord(ctx, "ncr", map[string]any{"part_number": "TR-7", "status": "open"}, ""); err != nil {
+	// Shared app-wide so the agents' users (other members) can see them.
+	if _, err := svc.CreateRecord(ctx, "ncr", client.RecordInput{Data: map[string]any{"part_number": "TR-7", "status": "open"}, Visibility: "app"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.PutBlob(ctx, []byte("hot-fire notes: chamber pressure nominal"), client.BlobOptions{Marking: "CUI//SP-EXPT", ContentType: "text/plain", Filename: "hf.txt"}); err != nil {
+	if _, err := svc.PutBlob(ctx, []byte("hot-fire notes: chamber pressure nominal"), client.BlobOptions{Marking: "CUI//SP-EXPT", ContentType: "text/plain", Filename: "hf.txt", Visibility: "app"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.PutBlob(ctx, []byte("cafeteria menu"), client.BlobOptions{Marking: "UNCONTROLLED", ContentType: "text/plain"}); err != nil {
+	if _, err := svc.PutBlob(ctx, []byte("cafeteria menu"), client.BlobOptions{Marking: "UNCONTROLLED", ContentType: "text/plain", Visibility: "app"}); err != nil {
 		t.Fatal(err)
 	}
 	return &fixture{env: env, api: srv}
@@ -57,7 +59,7 @@ func setup(t *testing.T) *fixture {
 func (f *fixture) session(t *testing.T, agent, user string) *mcp.ClientSession {
 	t.Helper()
 	cl := client.New(f.api.URL, client.StaticToken(testenv.Token(t, agent)))
-	srv := mcpserver.New(cl, mcpserver.Options{DefaultOnBehalfOf: testenv.Token(t, user)})
+	srv := mcpserver.New(cl, mcpserver.Options{DefaultOnBehalfOf: testenv.Token(t, user), DefaultApp: testenv.AppID})
 	st, ct := mcp.NewInMemoryTransports()
 	ctx := context.Background()
 	if _, err := srv.Connect(ctx, st, nil); err != nil {
@@ -100,7 +102,7 @@ func TestToolCatalog(t *testing.T) {
 			t.Errorf("destructive tool exposed: %s", tl.Name)
 		}
 	}
-	if len(tools) != 11 || !tools["query_records"].Annotations.ReadOnlyHint || !*tools["update_record"].Annotations.DestructiveHint {
+	if len(tools) != 13 || !tools["query_records"].Annotations.ReadOnlyHint || !*tools["update_record"].Annotations.DestructiveHint {
 		t.Fatalf("catalog: %d tools", len(tools))
 	}
 }
@@ -108,10 +110,12 @@ func TestToolCatalog(t *testing.T) {
 func TestAgentOutsideBoundarySeesMetadataNotCUI(t *testing.T) {
 	f := setup(t)
 	cs := f.session(t, "agent:assistant", "engineer@rel.test")
+	// Filtering is a content assertion: an agent denied content gets no filtered matches at all.
 	page, errText := call(t, cs, "query_records", map[string]any{"collection": "ncr", "filters": map[string]any{"part_number": "TR-7"}})
-	if errText != "" {
-		t.Fatal(errText)
+	if errText != "" || len(page["records"].([]any)) != 0 {
+		t.Fatalf("filtered query by an agent outside the boundary: %v %s", page, errText)
 	}
+	page, _ = call(t, cs, "query_records", map[string]any{"collection": "ncr"})
 	rec := page["records"].([]any)[0].(map[string]any)
 	if page["marking"] != "CUI//SP-EXPT" || rec["content_withheld"] != true || rec["data"] != nil || rec["handling"] == nil {
 		t.Fatalf("record %v", rec)
@@ -179,7 +183,13 @@ func TestWritesAuditedWithBothIdentities(t *testing.T) {
 	if _, errText := call(t, cs, "put_blob_text", map[string]any{"text": "summary", "marking": "CUI//SP-EXPT", "filename": "summary.md"}); errText != "" {
 		t.Fatal(errText)
 	}
-	events, _ := f.env.C.Audit.List(context.Background(), 0, 1000)
+	var events []audit.Event
+	admin := f.env.Ctx(t, "admin@rel.test")
+	_, chains, _ := f.env.C.Auditing.Events(context.Background(), admin, "", 0, 1)
+	for _, ch := range chains {
+		ev, _, _ := f.env.C.Auditing.Events(context.Background(), admin, ch, 0, 1000)
+		events = append(events, ev...)
+	}
 	n := 0
 	for _, e := range events {
 		if (e.Action == "record.create" || e.Action == "blob.create") && e.Decision == "allow" && e.Actor == "agent:assistant" &&
@@ -216,7 +226,7 @@ func TestStreamableHTTPDelegation(t *testing.T) {
 		}
 		return vt.Subject, vt.ExpiresAt, nil
 	}
-	srv := mcpserver.New(client.New(f.api.URL, client.StaticToken(testenv.Token(t, "agent:boundary"))), mcpserver.Options{})
+	srv := mcpserver.New(client.New(f.api.URL, client.StaticToken(testenv.Token(t, "agent:boundary"))), mcpserver.Options{DefaultApp: testenv.AppID})
 	mcpHTTP := httptest.NewServer(mcpserver.HTTPHandler(srv, verify, "http://mcp.test", "http://issuer.test"))
 	t.Cleanup(mcpHTTP.Close)
 
@@ -240,5 +250,31 @@ func TestStreamableHTTPDelegation(t *testing.T) {
 			t.Fatalf("%s query: %q", user, errText)
 		}
 		_ = cs.Close()
+	}
+}
+
+// An agent can undo a change through history and restore; another app is unreachable even when named.
+func TestUndoAndAppSelection(t *testing.T) {
+	f := setup(t)
+	cs := f.session(t, "agent:boundary", "engineer@rel.test")
+	rec, errText := call(t, cs, "create_record", map[string]any{"collection": "ncr", "data": map[string]any{"part_number": "TR-9", "status": "open"}})
+	if errText != "" {
+		t.Fatal(errText)
+	}
+	id := rec["id"].(string)
+	if _, errText := call(t, cs, "update_record", map[string]any{"collection": "ncr", "record_id": id, "expected_version": 1,
+		"data": map[string]any{"part_number": "TR-9", "status": "scrapped by mistake"}}); errText != "" {
+		t.Fatal(errText)
+	}
+	h, _ := call(t, cs, "record_history", map[string]any{"collection": "ncr", "record_id": id})
+	if len(h["items"].([]any)) != 2 {
+		t.Fatalf("history %v", h)
+	}
+	back, errText := call(t, cs, "restore_record", map[string]any{"collection": "ncr", "record_id": id, "version": 1, "expected_version": 2})
+	if errText != "" || back["data"].(map[string]any)["status"] != "open" || back["version"] != float64(3) {
+		t.Fatalf("restore %v %s", back, errText)
+	}
+	if _, errText := call(t, cs, "list_collections", map[string]any{"app": testenv.OtherID}); !strings.Contains(errText, "not_found") {
+		t.Fatalf("another app reachable: %q", errText)
 	}
 }

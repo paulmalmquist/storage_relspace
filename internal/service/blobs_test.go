@@ -3,31 +3,17 @@ package service_test
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
-	"github.com/paulmalmquist/storage_relspace/internal/errs"
-	"github.com/paulmalmquist/storage_relspace/internal/markings"
 	"github.com/paulmalmquist/storage_relspace/internal/service"
 	"github.com/paulmalmquist/storage_relspace/internal/testenv"
 )
 
-var expt = markings.MustParse("CUI//SP-EXPT//NOFORN")
-
-func randBytes(n int) []byte {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return b
-}
-
-func wantCode(t *testing.T, err error, code string) {
-	t.Helper()
-	if !errs.Is(err, code) {
-		t.Fatalf("want %s, got %v", code, err)
-	}
-}
+func sharedBlob(m service.BlobInput) service.BlobInput { m.Visibility = "app"; return m }
 
 func TestBlobRoundTrip(t *testing.T) {
 	env, ctx := testenv.New(t), context.Background()
@@ -38,8 +24,8 @@ func TestBlobRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *meta.SizeBytes != int64(len(data)) {
-		t.Fatalf("size %d", *meta.SizeBytes)
+	if *meta.SizeBytes != int64(len(data)) || meta.Owner != "engineer@rel.test" || meta.Visibility != "private" {
+		t.Fatalf("meta %+v", meta)
 	}
 	got, body, err := env.C.Blobs.ReadAll(ctx, eng, meta.ID)
 	if err != nil || !bytes.Equal(body, data) {
@@ -47,6 +33,10 @@ func TestBlobRoundTrip(t *testing.T) {
 	}
 	if got.Filename != "weld-map.bin" || got.Metadata["part_number"] != "TR-1042" || !got.Marking.Equal(expt) {
 		t.Fatalf("metadata %+v", got)
+	}
+	// Object addresses carry the app boundary.
+	if p := env.ObjectPath(t, meta.ID); !bytes.Contains([]byte(filepath.ToSlash(p)), []byte("apps/acme/test/"+meta.ID+"/")) {
+		t.Fatalf("object path %s is not under the app prefix", p)
 	}
 }
 
@@ -59,12 +49,12 @@ func TestNothingSensitiveAtRest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	disk, _ := os.ReadFile(env.ObjectPath(meta.ID))
+	disk, _ := os.ReadFile(env.ObjectPath(t, meta.ID))
 	if bytes.Contains(disk, []byte("INJECTOR")) {
 		t.Fatal("plaintext on disk")
 	}
 	var sealed, wrapped []byte
-	if err := env.C.DB.QueryRow(ctx, `SELECT sealed_meta, wrapped_dek FROM blobs WHERE id=$1`, meta.ID).Scan(&sealed, &wrapped); err != nil {
+	if err := env.Migrator.QueryRow(ctx, `SELECT sealed_meta, wrapped_dek FROM blobs WHERE id=$1`, meta.ID).Scan(&sealed, &wrapped); err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(sealed, []byte("pintle")) || bytes.Contains(sealed, []byte("HOTFIRE")) || len(wrapped) <= 32 {
@@ -75,31 +65,33 @@ func TestNothingSensitiveAtRest(t *testing.T) {
 func TestTamperedObjectDetectedAndAudited(t *testing.T) {
 	env, ctx := testenv.New(t), context.Background()
 	eng := env.Ctx(t, "engineer@rel.test")
-	meta, _ := env.C.Blobs.Put(ctx, eng, randBytes(20_000), service.BlobInput{Marking: expt})
-	raw, _ := os.ReadFile(env.ObjectPath(meta.ID))
+	meta := must[*service.BlobMeta](t)(env.C.Blobs.Put(ctx, eng, randBytes(20_000), service.BlobInput{Marking: expt}))
+	raw, _ := os.ReadFile(env.ObjectPath(t, meta.ID))
 	raw[len(raw)-100] ^= 0xFF
-	_ = os.WriteFile(env.ObjectPath(meta.ID), raw, 0o600)
+	_ = os.WriteFile(env.ObjectPath(t, meta.ID), raw, 0o600)
 	_, _, err := env.C.Blobs.ReadAll(ctx, eng, meta.ID)
 	wantCode(t, err, "integrity_violation")
-	events, _ := env.C.Audit.List(ctx, 0, 1000)
-	if last := events[len(events)-1]; last.Decision != "error" {
-		t.Fatalf("integrity failure not audited: %+v", last)
+	var n int
+	_ = env.Migrator.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE resource_id=$1 AND decision='error'
+		AND reason LIKE 'integrity failure%'`, meta.ID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("integrity failure audited %d times", n)
 	}
 }
 
 func TestMarkingDowngradeInDatabaseBreaksDecryption(t *testing.T) {
 	env, ctx := testenv.New(t), context.Background()
-	meta, _ := env.C.Blobs.Put(ctx, env.Ctx(t, "engineer@rel.test"), []byte("export controlled"), service.BlobInput{Marking: expt})
-	if _, err := env.C.DB.Exec(ctx, `UPDATE blobs SET marking='UNCONTROLLED' WHERE id=$1`, meta.ID); err != nil {
-		t.Fatal(err)
-	}
+	meta := must[*service.BlobMeta](t)(env.C.Blobs.Put(ctx, env.Ctx(t, "engineer@rel.test"), []byte("export controlled"),
+		sharedBlob(service.BlobInput{Marking: expt})))
+	env.Admin(t, `UPDATE blobs SET marking='UNCONTROLLED' WHERE id=$1`, meta.ID)
 	_, _, err := env.C.Blobs.ReadAll(ctx, env.Ctx(t, "admin@rel.test"), meta.ID)
 	wantCode(t, err, "integrity_violation")
 }
 
 func TestForeignNationalCannotSeeExportControlled(t *testing.T) {
 	env, ctx := testenv.New(t), context.Background()
-	meta, _ := env.C.Blobs.Put(ctx, env.Ctx(t, "engineer@rel.test"), []byte("itar"), service.BlobInput{Marking: expt})
+	meta := must[*service.BlobMeta](t)(env.C.Blobs.Put(ctx, env.Ctx(t, "engineer@rel.test"), []byte("itar"),
+		sharedBlob(service.BlobInput{Marking: expt})))
 	foreign := env.Ctx(t, "foreign@rel.test")
 	_, err := env.C.Blobs.Meta(ctx, foreign, meta.ID)
 	wantCode(t, err, "not_found") // concealed: no existence oracle
@@ -113,24 +105,32 @@ func TestForeignNationalCannotSeeExportControlled(t *testing.T) {
 	wantCode(t, err, "forbidden")
 }
 
-func TestShredIsIrreversible(t *testing.T) {
+func TestShredDestroysKeyAndWorkerDeletesObject(t *testing.T) {
 	env, ctx := testenv.New(t), context.Background()
 	eng := env.Ctx(t, "engineer@rel.test")
-	meta, _ := env.C.Blobs.Put(ctx, eng, []byte("to be destroyed"), service.BlobInput{Marking: expt})
+	meta := must[*service.BlobMeta](t)(env.C.Blobs.Put(ctx, eng, []byte("to be destroyed"), service.BlobInput{Marking: expt}))
+	path := env.ObjectPath(t, meta.ID)
 	if err := env.C.Blobs.Delete(ctx, eng, meta.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(env.ObjectPath(meta.ID)); !os.IsNotExist(err) {
-		t.Fatal("object still on disk")
-	}
 	var state string
 	var wrapped []byte
-	_ = env.C.DB.QueryRow(ctx, `SELECT state, wrapped_dek FROM blobs WHERE id=$1`, meta.ID).Scan(&state, &wrapped)
+	_ = env.Migrator.QueryRow(ctx, `SELECT state, wrapped_dek FROM blobs WHERE id=$1`, meta.ID).Scan(&state, &wrapped)
 	if state != "shredded" || wrapped != nil {
 		t.Fatalf("state %s, wrapped key kept: %v", state, wrapped != nil)
 	}
-	_, _, err := env.C.Blobs.ReadAll(ctx, env.Ctx(t, "admin@rel.test"), meta.ID)
+	_, _, err := env.C.Blobs.ReadAll(ctx, eng, meta.ID)
 	wantCode(t, err, "not_found")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("object deleted before the worker ran (deletion must go through the outbox)")
+	}
+	stats, err := env.C.Worker.RunOnce(ctx)
+	if err != nil || stats.JobsDone != 1 {
+		t.Fatalf("worker: %v %+v", err, stats)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("object still on disk after the worker ran")
+	}
 }
 
 func TestSizeLimitAbortsAndCleansUp(t *testing.T) {
@@ -146,26 +146,26 @@ func TestSizeLimitAbortsAndCleansUp(t *testing.T) {
 	}
 	_, err = u.Write([]byte("one byte too many"))
 	wantCode(t, err, "payload_too_large")
-	var n int
-	_ = env.C.DB.QueryRow(ctx, `SELECT count(*) FROM blobs`).Scan(&n)
-	files, _ := filepath.Glob(filepath.Join(env.BlobDir, "*", "*"))
-	if n != 0 || len(files) != 0 {
-		t.Fatalf("leftovers: %d rows, %v files", n, files)
+	var state string
+	_ = env.Migrator.QueryRow(ctx, `SELECT state FROM blobs`).Scan(&state)
+	if _, err := env.C.Worker.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(env.BlobDir, "apps", "*", "*", "*", "*"))
+	if state != "aborted" || len(files) != 0 {
+		t.Fatalf("leftovers: state %s, files %v", state, files)
 	}
 }
 
-func TestIdempotentUploadAndValidation(t *testing.T) {
+func TestUploadValidation(t *testing.T) {
 	env, ctx := testenv.New(t), context.Background()
 	eng := env.Ctx(t, "engineer@rel.test")
-	a, _ := env.C.Blobs.Put(ctx, eng, []byte("once"), service.BlobInput{Marking: expt, IdempotencyKey: "k-1"})
-	b, _ := env.C.Blobs.Put(ctx, eng, []byte("once"), service.BlobInput{Marking: expt, IdempotencyKey: "k-1"})
-	if a.ID != b.ID {
-		t.Fatal("idempotent replay created a second blob")
-	}
 	_, err := env.C.Blobs.Put(ctx, eng, []byte("x"), service.BlobInput{Marking: expt, ContentType: "not a type"})
 	wantCode(t, err, "validation_failed")
 	_, err = env.C.Blobs.Put(ctx, eng, []byte("x"), service.BlobInput{Marking: expt, Filename: "../../etc/passwd"})
 	wantCode(t, err, "validation_failed")
+	_, err = env.C.Blobs.Put(ctx, env.Ctx(t, "intern@rel.test"), []byte("x"), service.BlobInput{})
+	wantCode(t, err, "forbidden") // viewer role
 }
 
 func TestListPagination(t *testing.T) {
@@ -173,7 +173,7 @@ func TestListPagination(t *testing.T) {
 	eng := env.Ctx(t, "engineer@rel.test")
 	ids := map[string]bool{}
 	for range 5 {
-		m, _ := env.C.Blobs.Put(ctx, eng, []byte("x"), service.BlobInput{Marking: expt})
+		m := must[*service.BlobMeta](t)(env.C.Blobs.Put(ctx, eng, []byte("x"), service.BlobInput{Marking: expt}))
 		ids[m.ID] = true
 	}
 	seen := map[string]bool{}
@@ -191,16 +191,28 @@ func TestListPagination(t *testing.T) {
 	if len(seen) != 5 || cur != "" {
 		t.Fatalf("pagination saw %d, cursor %q", len(seen), cur)
 	}
-	for id := range ids {
-		if !seen[id] {
-			t.Fatal("missing blob in pages")
-		}
+}
+
+// Records the caller may not see are excluded before LIMIT: the page is full and the cursor does
+// not hint at hidden rows.
+func TestHiddenRowsDoNotShapePages(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	eng := env.Ctx(t, "engineer@rel.test")
+	for range 3 {
+		must[*service.BlobMeta](t)(env.C.Blobs.Put(ctx, eng, []byte("x"), sharedBlob(service.BlobInput{Marking: expt})))
+	}
+	must[*service.BlobMeta](t)(env.C.Blobs.Put(ctx, eng, []byte("y"), sharedBlob(service.BlobInput{})))
+	foreign := env.Ctx(t, "foreign@rel.test") // not a U.S. person: NOFORN is hidden
+	items, next, err := env.C.Blobs.List(ctx, foreign, 1, "")
+	if err != nil || len(items) != 1 || next != "" {
+		t.Fatalf("foreign: %d items, next %q, %v", len(items), next, err)
 	}
 }
 
 func TestAgentSeesMetadataNotCUIContent(t *testing.T) {
 	env, ctx := testenv.New(t), context.Background()
-	meta, _ := env.C.Blobs.Put(ctx, env.Ctx(t, "engineer@rel.test"), []byte("cui"), service.BlobInput{Marking: expt})
+	meta := must[*service.BlobMeta](t)(env.C.Blobs.Put(ctx, env.Ctx(t, "engineer@rel.test"), []byte("cui"),
+		sharedBlob(service.BlobInput{Marking: expt})))
 	agent := env.Ctx(t, "agent:assistant")
 	if _, err := env.C.Blobs.Meta(ctx, agent, meta.ID); err != nil {
 		t.Fatal(err)
@@ -210,5 +222,124 @@ func TestAgentSeesMetadataNotCUIContent(t *testing.T) {
 	_, body, err := env.C.Blobs.ReadAll(ctx, env.Ctx(t, "agent:boundary"), meta.ID)
 	if err != nil || string(body) != "cui" {
 		t.Fatalf("cleared agent: %v", err)
+	}
+}
+
+// Finding 4: a sweep racing an in-progress upload. Exactly one side wins: the sweeper cannot abort
+// a leased upload, and once it has aborted an expired one, the late commit fails and leaves neither
+// an object nor a "stored" audit event.
+func TestUploadSweepAndCommitRace(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	eng := env.Ctx(t, "engineer@rel.test")
+	u, _, err := env.C.Blobs.Begin(ctx, eng, service.BlobInput{Marking: expt, DeclaredSize: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = u.Write([]byte("in flight"))
+	stats, _ := env.C.Worker.RunOnce(ctx)
+	if stats.UploadsAborted != 0 {
+		t.Fatal("sweeper aborted an upload that holds its lease")
+	}
+	env.Admin(t, `UPDATE blobs SET lease_expires = now() - interval '1 second' WHERE id = $1`, u.ID)
+	if stats, _ := env.C.Worker.RunOnce(ctx); stats.UploadsAborted != 1 {
+		t.Fatalf("expired upload not swept: %+v", stats)
+	}
+	_, err = u.Commit()
+	wantCode(t, err, "upload_expired")
+	if _, err := env.C.Worker.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(env.BlobDir, "apps", "*", "*", "*", "*"))
+	var stored int
+	_ = env.Migrator.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE resource_id=$1 AND reason='blob stored'`, u.ID).Scan(&stored)
+	var state string
+	_ = env.Migrator.QueryRow(ctx, `SELECT state FROM blobs WHERE id=$1`, u.ID).Scan(&state)
+	if len(files) != 0 || stored != 0 || (state != "aborted" && state != "purged") {
+		t.Fatalf("files %v, stored events %d, state %s", files, stored, state)
+	}
+}
+
+// Finding 5: concurrent uploads with one operation ID produce one canonical blob; the second
+// attempt is told the operation is in progress, and a retry after completion with different
+// content is rejected.
+func TestConcurrentUploadsWithOneOperationID(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	eng := env.Ctx(t, "engineer@rel.test")
+	eng.OpID = "upload-op-0001"
+	a, _, errA := env.C.Blobs.Begin(ctx, eng, service.BlobInput{Marking: expt, DeclaredSize: 3})
+	_, _, errB := env.C.Blobs.Begin(ctx, eng, service.BlobInput{Marking: expt, DeclaredSize: 3})
+	if errA != nil {
+		t.Fatal(errA)
+	}
+	wantCode(t, errB, "operation_in_progress")
+	_, _ = a.Write([]byte("one"))
+	first := must[*service.BlobMeta](t)(a.Commit())
+	again := must[*service.BlobMeta](t)(env.C.Blobs.Put(ctx, eng, []byte("one"), service.BlobInput{Marking: expt}))
+	if again.ID != first.ID || !again.Replayed {
+		t.Fatal("retry did not return the canonical blob")
+	}
+	_, err := env.C.Blobs.Put(ctx, eng, []byte("two"), service.BlobInput{Marking: expt})
+	wantCode(t, err, "idempotency_key_reused")
+	_, err = env.C.Blobs.Put(ctx, eng, []byte("one"), service.BlobInput{Marking: expt, Filename: "renamed"})
+	wantCode(t, err, "idempotency_key_reused")
+	var active int
+	_ = env.Migrator.QueryRow(ctx, `SELECT count(*) FROM blobs WHERE state='active'`).Scan(&active)
+	if active != 1 {
+		t.Fatalf("%d active blobs", active)
+	}
+}
+
+// Many goroutines race the same operation ID; exactly one upload happens.
+func TestConcurrentPutsConverge(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	eng := env.Ctx(t, "engineer@rel.test")
+	eng.OpID = "upload-op-race"
+	var wg sync.WaitGroup
+	ids := make(chan string, 8)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for attempt := 0; attempt < 50; attempt++ {
+				m, err := env.C.Blobs.Put(ctx, eng, []byte("same"), service.BlobInput{Marking: expt})
+				if err == nil {
+					ids <- m.ID
+					return
+				}
+				time.Sleep(20 * time.Millisecond) // operation_in_progress: retry
+			}
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	seen := map[string]bool{}
+	for id := range ids {
+		seen[id] = true
+	}
+	if len(seen) != 1 {
+		t.Fatalf("one operation ID produced %d blobs", len(seen))
+	}
+}
+
+// A crashed upload's operation can be taken over once its lease expires.
+func TestExpiredUploadLeaseIsTakenOver(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	eng := env.Ctx(t, "engineer@rel.test")
+	eng.OpID = "upload-op-crash"
+	crashed, _, err := env.C.Blobs.Begin(ctx, eng, service.BlobInput{Marking: expt, DeclaredSize: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = crashed.Write([]byte("hal"))
+	env.Admin(t, `UPDATE operation_receipts SET lease_expires = now() - interval '1 second'`)
+	m, err := env.C.Blobs.Put(ctx, eng, []byte("full"), service.BlobInput{Marking: expt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = crashed.Commit()
+	wantCode(t, err, "upload_expired")
+	_, body, err := env.C.Blobs.ReadAll(ctx, env.Ctx(t, "engineer@rel.test"), m.ID)
+	if err != nil || string(body) != "full" {
+		t.Fatalf("takeover upload: %v %q", err, body)
 	}
 }

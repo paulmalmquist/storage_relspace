@@ -1,6 +1,8 @@
-.PHONY: build build-fips test test-fips race lint vuln check run mcp docker
+.PHONY: build build-fips test test-unit test-fips race lint vuln check run mcp docker
 
 PG_URL ?= postgres://postgres:strongbox@localhost:5432/strongbox_test?sslmode=disable
+# Integration tests fail when Postgres is unreachable. `make test-unit` runs without it.
+export STRONGBOX_REQUIRE_INTEGRATION ?= 1
 BIN ?= bin/strongbox
 
 build:
@@ -9,13 +11,16 @@ build:
 build-fips:
 	GOFIPS140=v1.0.0 go build -o $(BIN) ./cmd/strongbox
 
-# Unit tests always run; integration tests need Postgres (PG_URL).
+# Integration tests run against PG_URL as a restricted runtime login the harness creates.
 test:
 	STRONGBOX_TEST_DATABASE_URL="$(PG_URL)" go test ./...
 
 # The whole suite in Go's enforced FIPS mode.
 test-fips:
 	STRONGBOX_TEST_DATABASE_URL="$(PG_URL)" GOFIPS140=v1.0.0 GODEBUG=fips140=only go test -count=1 ./...
+
+test-unit:
+	STRONGBOX_REQUIRE_INTEGRATION= STRONGBOX_TEST_DATABASE_URL= go test ./...
 
 race:
 	STRONGBOX_TEST_DATABASE_URL="$(PG_URL)" go test -race -count=1 ./...

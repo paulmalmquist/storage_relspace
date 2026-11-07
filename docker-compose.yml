@@ -1,10 +1,17 @@
-# Local development stack: Postgres + migrate + API + MCP (streamable HTTP). Not for CUI.
+# Local development stack: Postgres + migrate + API (with worker) + MCP (streamable HTTP). Not for CUI.
+#
 #   docker compose up --build
 #   docker compose exec api /strongbox principal put you@example.com -scope '*' -us-person -cui-access -category '*'
+#   docker compose exec api /strongbox admin app create notes:dev -name Notes -admin you@example.com
 #   docker compose exec api /strongbox token you@example.com
+#
+# The API logs in as strongbox_api, a restricted member of strongbox_runtime (see
+# infra/compose/initdb). Migrations and admin commands use the postgres superuser.
 x-env: &env
   STRONGBOX_ENV: dev
-  STRONGBOX_DATABASE_URL: postgres://postgres:strongbox@postgres:5432/strongbox?sslmode=disable
+  STRONGBOX_APP_ENV: dev
+  STRONGBOX_DATABASE_URL: postgres://strongbox_api:strongbox-api@postgres:5432/strongbox?sslmode=disable
+  STRONGBOX_MIGRATION_DATABASE_URL: postgres://postgres:strongbox@postgres:5432/strongbox?sslmode=disable
   STRONGBOX_DEV_JWT_SECRET: ${STRONGBOX_DEV_JWT_SECRET:-local-dev-secret-change-me-0123456789abcdef}
   STRONGBOX_LOCAL_KEYRING_PATH: /data/keyring.json
   STRONGBOX_BLOB_LOCAL_PATH: /data/blobs
@@ -16,6 +23,7 @@ services:
       POSTGRES_PASSWORD: strongbox
       POSTGRES_DB: strongbox
     ports: ["5432:5432"]
+    volumes: ["./infra/compose/initdb:/docker-entrypoint-initdb.d:ro"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 2s
@@ -24,7 +32,7 @@ services:
   migrate:
     build: .
     environment: *env
-    command: ["init"]
+    command: ["init", "-bootstrap-roles", "-runtime-login", "strongbox_api"]
     volumes: ["strongbox-data:/data"]
     depends_on:
       postgres:
@@ -47,6 +55,7 @@ services:
       STRONGBOX_MCP_API_URL: http://api:8080
       STRONGBOX_MCP_PUBLIC_URL: http://localhost:8090
       STRONGBOX_MCP_TOKEN: ${STRONGBOX_MCP_TOKEN:-}
+      STRONGBOX_MCP_APP: ${STRONGBOX_MCP_APP:-notes}
     command: ["mcp", "-transport", "streamable-http", "-addr", ":8090"]
     ports: ["8090:8090"]
     depends_on: [api]

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"cloud.google.com/go/storage"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -27,7 +28,9 @@ import (
 //
 // GCS sits behind a small objectAPI interface (faked in tests); S3 is faked at the client interface.
 
-var keyRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$`)
+// Storage keys are one to six segments, each starting with an alphanumeric, so "." and ".." can
+// never appear as a segment. App-scoped objects live under apps/<app_id>/<env>/.
+var keyRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,120}(/[A-Za-z0-9][A-Za-z0-9._-]{0,120}){0,5}$`)
 
 func checkKey(key string) error {
 	if !keyRe.MatchString(key) {
@@ -67,7 +70,10 @@ func (l *Local) path(key string) (string, error) {
 	if err := checkKey(key); err != nil {
 		return "", err
 	}
-	return filepath.Join(l.root, key[len(key)-2:], key), nil
+	if strings.Contains(key, "/") {
+		return filepath.Join(l.root, filepath.FromSlash(key)), nil
+	}
+	return filepath.Join(l.root, key[len(key)-2:], key), nil // pre-app-scoping layout
 }
 
 type localWriter struct {

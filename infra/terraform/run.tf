@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------------------------
 # API: internal ingress, Cloud Run IAM in front, app-level OIDC verification behind it.
 # Callers send the same Google ID token in X-Serverless-Authorization (Cloud Run IAM) and
-# Authorization (Strongbox); the Python client does this automatically.
+# Authorization (Strongbox); the Go SDK does this with client.WithServerlessAuth().
 # ---------------------------------------------------------------------------------------------
 resource "google_cloud_run_v2_service" "api" {
   name             = "${var.name}-api"
@@ -10,12 +10,14 @@ resource "google_cloud_run_v2_service" "api" {
   custom_audiences = [var.api_audience]
 
   template {
-    service_account       = google_service_account.api.email
-    execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
+    service_account                  = google_service_account.api.email
+    execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
+    max_instance_request_concurrency = var.api_concurrency
+    timeout                          = "300s"
 
     scaling {
-      min_instance_count = 1
-      max_instance_count = 10
+      min_instance_count = var.api_min_instances
+      max_instance_count = var.api_max_instances
     }
 
     vpc_access {
@@ -29,7 +31,7 @@ resource "google_cloud_run_v2_service" "api" {
     containers {
       name       = "api"
       image      = var.api_image
-      args       = ["serve", "--addr", ":8080"]
+      args       = ["serve", "-addr", ":8080"]
       depends_on = ["cloud-sql-proxy"]
 
       ports {
@@ -49,6 +51,9 @@ resource "google_cloud_run_v2_service" "api" {
           cpu    = "2"
           memory = "2Gi"
         }
+        # The outbox/maintenance worker runs inside serve, so CPU must stay allocated between
+        # requests. Every instance competes for jobs with SKIP LOCKED leases.
+        cpu_idle = false
       }
 
       startup_probe {
@@ -94,6 +99,13 @@ resource "google_cloud_run_v2_service" "api" {
     google_storage_bucket_iam_member.api_objects,
     google_sql_user.api,
   ]
+
+  lifecycle {
+    precondition {
+      condition     = local.db_connections_needed <= var.db_max_connections
+      error_message = "api_max_instances * db_pool_size + 10 exceeds db_max_connections."
+    }
+  }
 }
 
 resource "google_cloud_run_v2_service_iam_member" "api_invokers" {
@@ -104,14 +116,16 @@ resource "google_cloud_run_v2_service_iam_member" "api_invokers" {
   member   = each.value
 }
 
-# Schema migrations run as a one-off job, not on every replica start.
+# Schema migrations run as a one-off job under their own identity, never on replica start. The
+# job creates the roles and schema on first run and grants strongbox_runtime to the API login.
 resource "google_cloud_run_v2_job" "migrate" {
-  name     = "${var.name}-migrate"
-  location = var.region
+  name       = "${var.name}-migrate"
+  location   = var.region
+  depends_on = [google_sql_user.migrate, google_sql_user.api, google_project_iam_member.migrate_sql]
 
   template {
     template {
-      service_account = google_service_account.api.email
+      service_account = google_service_account.migrate.email
 
       vpc_access {
         egress = "ALL_TRAFFIC"
@@ -123,10 +137,15 @@ resource "google_cloud_run_v2_job" "migrate" {
 
       containers {
         image = var.api_image
-        args  = ["init", "--wait", "120s", "--shutdown-url", "http://127.0.0.1:9091/quitquitquit"]
+        args = [
+          "init", "-wait", "120s", "-shutdown-url", "http://127.0.0.1:9091/quitquitquit",
+          "-bootstrap-roles", "-runtime-login", local.api_db_user,
+        ]
 
         dynamic "env" {
-          for_each = local.common_env
+          for_each = merge(local.common_env, {
+            STRONGBOX_MIGRATION_DATABASE_URL = "postgres://${local.migrate_db_user}@127.0.0.1:5432/strongbox?sslmode=disable"
+          })
           content {
             name  = env.key
             value = env.value

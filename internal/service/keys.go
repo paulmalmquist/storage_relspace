@@ -1,5 +1,3 @@
-// Package service holds the domain services. Every path into stored data goes through them, so
-// policy and audit cannot be skipped by the API or the MCP server.
 package service
 
 import (
@@ -11,132 +9,144 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/paulmalmquist/storage_relspace/internal/cache"
 	"github.com/paulmalmquist/storage_relspace/internal/crypto"
 	"github.com/paulmalmquist/storage_relspace/internal/errs"
 	"github.com/paulmalmquist/storage_relspace/internal/store"
 )
 
-// Data keys for small values (records, sealed blob metadata) and blind indexes.
-//
-// Blobs get a fresh data key per object. Small values would cost one KMS round trip each that way, so
-// they use per-scope data keys instead: wrapped by the KEK, stored in data_keys, unwrapped on demand,
-// cached in memory for a short TTL, and rotated on a schedule. Old keys stay available for decryption.
-// Blind-index keys never rotate, because tokens must stay comparable.
+// Data keys (DEKs) are per app and scope, wrapped by the KMS key-encryption key. The wrap AAD binds
+// app, key id, scope and purpose, so a wrapped key copied to another app or scope will not unwrap.
+// Data keys rotate on age; blind-index keys never rotate (tokens must stay comparable) and receipt
+// keys never rotate (fingerprints must stay comparable for the receipt's lifetime).
 
 const (
-	PurposeData  = "data"
-	PurposeIndex = "index"
+	PurposeData    = "data"
+	PurposeIndex   = "index"
+	PurposeReceipt = "receipt"
 )
 
-func wrapAAD(id, scope, purpose string) []byte {
-	return []byte(fmt.Sprintf("strongbox/datakey/v1|%s|%s|%s", id, scope, purpose))
+// wrapAAD: version 1 is the pre-app-scoping context, kept readable for legacy keys.
+func wrapAAD(version int, app, id, scope, purpose string) []byte {
+	if version == 1 {
+		return []byte(fmt.Sprintf("strongbox/datakey/v1|%s|%s|%s", id, scope, purpose))
+	}
+	return []byte(fmt.Sprintf("strongbox/datakey/v2|%s|%s|%s|%s", app, id, scope, purpose))
 }
 
 type cachedKey struct {
-	key     []byte
-	scope   string
-	expires time.Time
+	scope string
+	key   []byte
 }
 
+// Keys is safe for concurrent use. The cache is bounded and coalesces concurrent misses, so a burst
+// of requests for one cold key makes one KMS call.
 type Keys struct {
-	db       *pgxpool.Pool
 	kms      crypto.KeyProvider
 	Rotation time.Duration
-	ttl      time.Duration
-	mu       sync.Mutex
-	cache    map[string]cachedKey
+	cache    *cache.LRU[cachedKey]
+	// OnUnwrap observes KMS unwrap latency and outcome (metrics).
+	OnUnwrap func(d time.Duration, err error)
 }
 
-func NewKeys(db *pgxpool.Pool, kms crypto.KeyProvider, rotation, ttl time.Duration) *Keys {
-	return &Keys{db: db, kms: kms, Rotation: rotation, ttl: ttl, cache: map[string]cachedKey{}}
+func NewKeys(kms crypto.KeyProvider, rotation, ttl time.Duration, maxEntries int) *Keys {
+	return &Keys{kms: kms, Rotation: rotation, cache: cache.New[cachedKey](maxEntries, ttl)}
 }
 
-// Active returns the current key for a scope, creating or rotating it as needed.
-func (k *Keys) Active(ctx context.Context, scope, purpose string) (string, []byte, error) {
+// Active returns the current key for (app, scope, purpose), creating or rotating it in tx.
+func (k *Keys) Active(ctx context.Context, tx pgx.Tx, app, scope, purpose string) (string, []byte, error) {
 	var id string
 	var created time.Time
-	err := k.db.QueryRow(ctx, `SELECT id, created_at FROM data_keys WHERE scope = $1 AND purpose = $2
-		AND retired_at IS NULL ORDER BY created_at DESC LIMIT 1`, scope, purpose).Scan(&id, &created)
+	err := tx.QueryRow(ctx, `SELECT id, created_at FROM data_keys WHERE app = $1 AND scope = $2 AND purpose = $3
+		AND retired_at IS NULL ORDER BY created_at DESC LIMIT 1`, app, scope, purpose).Scan(&id, &created)
 	switch {
-	case err == nil && (purpose == PurposeIndex || time.Since(created) < k.Rotation):
-		key, err := k.Key(ctx, id, scope)
+	case err == nil && (purpose != PurposeData || time.Since(created) < k.Rotation):
+		key, err := k.Key(ctx, tx, app, id, scope)
 		return id, key, err
 	case err != nil && !errors.Is(err, pgx.ErrNoRows):
 		return "", nil, err
 	}
-	return k.create(ctx, scope, purpose)
+	return k.create(ctx, tx, app, scope, purpose)
 }
 
-func (k *Keys) create(ctx context.Context, scope, purpose string) (string, []byte, error) {
+func (k *Keys) create(ctx context.Context, tx pgx.Tx, app, scope, purpose string) (string, []byte, error) {
 	id := store.NewID("dk")
 	dek := crypto.NewDataKey()
-	w, err := k.kms.Wrap(ctx, dek, wrapAAD(id, scope, purpose))
+	w, err := k.kms.Wrap(ctx, dek, wrapAAD(2, app, id, scope, purpose))
 	if err != nil {
+		return "", nil, kmsError(err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO data_keys (app, id, scope, purpose, kek_id, wrapped_key, aad_version)
+		VALUES ($1,$2,$3,$4,$5,$6,2)`, app, id, scope, purpose, w.KEKID, w.Ciphertext); err != nil {
 		return "", nil, err
 	}
-	if _, err := k.db.Exec(ctx, `INSERT INTO data_keys (id, scope, purpose, kek_id, wrapped_key) VALUES ($1,$2,$3,$4,$5)`,
-		id, scope, purpose, w.KEKID, w.Ciphertext); err != nil {
-		return "", nil, err
-	}
-	k.remember(id, scope, dek)
+	// Cached only by (app, id): if tx rolls back, nothing will ever reference this id.
+	k.cache.Put(app+"\x00"+id, cachedKey{scope: scope, key: dek})
 	return id, dek, nil
 }
 
-// Key returns an unwrapped key, verifying it belongs to expectedScope.
-func (k *Keys) Key(ctx context.Context, id, expectedScope string) ([]byte, error) {
-	k.mu.Lock()
-	hit, ok := k.cache[id]
-	k.mu.Unlock()
-	if ok && time.Now().Before(hit.expires) {
-		if hit.scope != expectedScope {
-			return nil, errs.Integrity("data key belongs to a different scope")
+// Key returns an unwrapped key of app, verifying it belongs to expectedScope. The row is read in tx
+// (under RLS) on a cache miss.
+func (k *Keys) Key(ctx context.Context, tx pgx.Tx, app, id, expectedScope string) ([]byte, error) {
+	ck, err := k.cache.GetOrLoad(app+"\x00"+id, func() (cachedKey, error) {
+		var scope, purpose, kekID string
+		var wrapped []byte
+		var version int
+		err := tx.QueryRow(ctx, `SELECT scope, purpose, kek_id, wrapped_key, aad_version FROM data_keys
+			WHERE app = $1 AND id = $2`, app, id).Scan(&scope, &purpose, &kekID, &wrapped, &version)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return cachedKey{}, errs.Integrity("data key %s not found", id)
 		}
-		return hit.key, nil
-	}
-	var scope, purpose, kekID string
-	var wrapped []byte
-	err := k.db.QueryRow(ctx, `SELECT scope, purpose, kek_id, wrapped_key FROM data_keys WHERE id = $1`, id).
-		Scan(&scope, &purpose, &kekID, &wrapped)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, errs.Integrity("data key %s not found", id)
-	}
+		if err != nil {
+			return cachedKey{}, err
+		}
+		start := time.Now()
+		dek, err := k.kms.Unwrap(ctx, crypto.WrappedKey{KEKID: kekID, Ciphertext: wrapped}, wrapAAD(version, app, id, scope, purpose))
+		if k.OnUnwrap != nil {
+			k.OnUnwrap(time.Since(start), err)
+		}
+		if err != nil {
+			return cachedKey{}, kmsError(err)
+		}
+		return cachedKey{scope: scope, key: dek}, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	if scope != expectedScope {
+	if ck.scope != expectedScope {
 		return nil, errs.Integrity("data key belongs to a different scope")
 	}
-	dek, err := k.kms.Unwrap(ctx, crypto.WrappedKey{KEKID: kekID, Ciphertext: wrapped}, wrapAAD(id, scope, purpose))
-	if err != nil {
-		return nil, err
+	return ck.key, nil
+}
+
+// kmsError keeps integrity failures (wrong AAD, tampered wrap) distinct from KMS outages, which
+// callers may retry.
+func kmsError(err error) error {
+	if errs.Is(err, "integrity_violation") {
+		return err
 	}
-	k.remember(id, scope, dek)
-	return dek, nil
+	if _, ok := errs.As(err); ok {
+		return err
+	}
+	return errs.Unavailable("key management unavailable").Wrap(err)
 }
 
-func (k *Keys) remember(id, scope string, key []byte) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	k.cache[id] = cachedKey{key: key, scope: scope, expires: time.Now().Add(k.ttl)}
+// ClearCache drops unwrapped keys (tests, key-rotation drills).
+func (k *Keys) ClearCache() { k.cache.Clear() }
+
+// CacheStats reports cache effectiveness (metrics).
+func (k *Keys) CacheStats() (entries int, hits, misses, evictions int64) {
+	hits, misses, evictions = k.cache.Stats()
+	return k.cache.Len(), hits, misses, evictions
 }
 
-func (k *Keys) ClearCache() {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	k.cache = map[string]cachedKey{}
-}
-
-// Sealer seals JSON values under a scope's active data key.
-type Sealer struct{ keys *Keys }
-
-func (s Sealer) SealJSON(ctx context.Context, scope string, aad []byte, v any) (string, []byte, error) {
-	id, key, err := s.keys.Active(ctx, scope, PurposeData)
+// SealJSON seals v under the scope's active data key.
+func (k *Keys) SealJSON(ctx context.Context, tx pgx.Tx, app, scope string, aad []byte, v any) (string, []byte, error) {
+	id, key, err := k.Active(ctx, tx, app, scope, PurposeData)
 	if err != nil {
 		return "", nil, err
 	}
@@ -148,8 +158,9 @@ func (s Sealer) SealJSON(ctx context.Context, scope string, aad []byte, v any) (
 	return id, sealed, err
 }
 
-func (s Sealer) OpenJSON(ctx context.Context, scope, keyID string, aad, sealed []byte, out any) error {
-	key, err := s.keys.Key(ctx, keyID, scope)
+// OpenJSON opens a value sealed by SealJSON.
+func (k *Keys) OpenJSON(ctx context.Context, tx pgx.Tx, app, scope, keyID string, aad, sealed []byte, out any) error {
+	key, err := k.Key(ctx, tx, app, keyID, scope)
 	if err != nil {
 		return err
 	}
@@ -190,17 +201,22 @@ func CanonicalScalar(v any) (string, error) {
 	}
 }
 
-// BlindToken is an HMAC-SHA-256 token: equality-searchable without revealing the value.
-func BlindToken(indexKey []byte, collection, field string, v any) (string, error) {
+// BlindToken is an HMAC-SHA-256 token: equality-searchable without revealing the value. Version 2
+// binds the app as well as collection and field; version 1 tokens (legacy collections) do not.
+func BlindToken(indexKey []byte, version int, app, collection, field string, v any) (string, error) {
 	c, err := CanonicalScalar(v)
 	if err != nil {
 		return "", err
 	}
 	m := hmac.New(sha256.New, indexKey)
+	if version >= 2 {
+		m.Write([]byte(app + "\x1f"))
+	}
 	m.Write([]byte(collection + "\x1f" + field + "\x1f" + c))
 	return "b:" + hex.EncodeToString(m.Sum(nil)), nil
 }
 
+// PlainToken indexes UNCONTROLLED values of unencrypted collections.
 func PlainToken(v any) (string, error) {
 	c, err := CanonicalScalar(v)
 	if err != nil {

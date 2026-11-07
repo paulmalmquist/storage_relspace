@@ -2,22 +2,18 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/paulmalmquist/storage_relspace/internal/auth"
+	"github.com/paulmalmquist/storage_relspace/internal/cache"
 	"github.com/paulmalmquist/storage_relspace/internal/errs"
 	"github.com/paulmalmquist/storage_relspace/internal/markings"
 	"github.com/paulmalmquist/storage_relspace/internal/store"
@@ -25,52 +21,97 @@ import (
 
 // Structured records in schema-validated collections.
 //
-// Encrypted collections (mandatory for CUI) store each document sealed under the collection's data key.
-// The AAD binds collection, record id, marking and version, so swapping ciphertexts between rows,
-// rolling a row back, or editing its marking in the database all fail authentication.
+// Encrypted collections (mandatory for any controlled marking) store each document sealed under the
+// collection's data key. The AAD binds app, collection, record id, marking and version, so swapping
+// ciphertexts between rows or apps, rolling a row back, or editing its marking in the database all
+// fail authentication. Unencrypted collections may hold UNCONTROLLED records only; the database
+// enforces that with a CHECK constraint as well.
 //
-// Equality search on encrypted collections uses HMAC blind-index tokens over declared indexed_fields.
-// Equal values produce equal tokens (frequency is visible to someone with database access); range and
-// full-text search are not supported on encrypted data.
+// Equality search on encrypted collections uses HMAC blind-index tokens over declared
+// indexed_fields. Filtering on an indexed field is a content disclosure, so a filtered query only
+// ever considers records whose content the caller may read (see Query).
 
 var (
 	nameRe  = regexp.MustCompile(`^[a-z][a-z0-9_]{1,62}$`)
 	fieldRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
 )
 
-const maxIndexedFields = 16
+const (
+	maxIndexedFields = 16
+	maxSchemaBytes   = 64 * 1024
+	maxSchemaDepth   = 32
+	maxSchemaNodes   = 5000
+)
 
 func collScope(name string) string { return "collection:" + name }
 
-func recordAAD(coll, id string, m markings.Marking, version int) []byte {
-	return []byte(fmt.Sprintf("strongbox/record/v1|%s|%s|%s|%d", coll, id, m.Banner(), version))
+// recordAAD: version 1 is the pre-app-scoping context, kept readable for legacy rows.
+func recordAAD(aadVersion int, app, coll, id string, m markings.Marking, version int) []byte {
+	if aadVersion == 1 {
+		return []byte(fmt.Sprintf("strongbox/record/v1|%s|%s|%s|%d", coll, id, m.Banner(), version))
+	}
+	return []byte(fmt.Sprintf("strongbox/record/v2|%s|%s|%s|%s|%d", app, coll, id, m.Banner(), version))
 }
 
 type Collection struct {
-	Name          string
-	Marking       markings.Marking
-	Encrypted     bool
-	IndexedFields []string
-	JSONSchema    map[string]any
-	IndexKeyID    *string
-	Version       int
-	CreatedBy     string
-	CreatedAt     time.Time
+	App                  string
+	Name                 string
+	Marking              markings.Marking
+	Encrypted            bool
+	IndexedFields        []string
+	UniqueFields         []string
+	JSONSchema           map[string]any
+	IndexKeyID           *string
+	TokenVersion         int
+	Version              int
+	HistoryLimit         int
+	DeletedRetentionDays int
+	CreatedBy            string
+	CreatedAt            time.Time
+	// Pending is the contract a running migration will switch to. While it is set, writes must
+	// satisfy both contracts and maintain both sets of index and uniqueness tokens.
+	Pending *Collection
 }
 
 func (c *Collection) JSON() map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"name": c.Name, "marking": c.Marking.Banner(), "encrypted": c.Encrypted, "indexed_fields": nonNil(c.IndexedFields),
-		"json_schema": c.JSONSchema, "version": c.Version, "created_by": c.CreatedBy,
-		"created_at": c.CreatedAt.UTC().Format(time.RFC3339Nano),
+		"unique_fields": nonNil(c.UniqueFields), "json_schema": c.JSONSchema, "version": c.Version, "history_limit": c.HistoryLimit,
+		"deleted_retention_days": c.DeletedRetentionDays, "created_by": c.CreatedBy,
+		"created_at": c.CreatedAt.UTC().Format(time.RFC3339Nano), "pending_version": nil,
 	}
+	if c.Pending != nil {
+		out["pending_version"] = c.Pending.Version
+	}
+	return out
 }
 
-func nonNil(s []string) []string {
-	if s == nil {
-		return []string{}
+// indexed and unique are the fields writes must maintain tokens for: the current contract's, plus
+// the pending contract's during a migration.
+func (c *Collection) indexed() []string {
+	return union(c.IndexedFields, c.pendingFields(func(p *Collection) []string { return p.IndexedFields }))
+}
+func (c *Collection) unique() []string {
+	return union(c.UniqueFields, c.pendingFields(func(p *Collection) []string { return p.UniqueFields }))
+}
+
+func (c *Collection) pendingFields(f func(*Collection) []string) []string {
+	if c.Pending == nil {
+		return nil
 	}
-	return s
+	return f(c.Pending)
+}
+
+func union(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range append(append([]string{}, a...), b...) {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 type Record struct {
@@ -78,9 +119,15 @@ type Record struct {
 	Collection     string
 	Marking        markings.Marking
 	Version        int
+	SchemaVersion  *int
 	Data           map[string]any
 	Withheld       bool
 	WithheldReason string
+	Owner          string
+	Visibility     string
+	TeamID         string
+	Deleted        bool
+	Replayed       bool
 	CreatedBy      string
 	CreatedAt      time.Time
 	UpdatedBy      string
@@ -89,54 +136,142 @@ type Record struct {
 
 func (r *Record) JSON() map[string]any {
 	var data any
-	if !r.Withheld {
+	if !r.Withheld && !r.Deleted {
 		data = r.Data
 	}
 	out := map[string]any{
 		"id": r.ID, "collection": r.Collection, "marking": r.Marking.Banner(), "version": r.Version, "data": data,
-		"content_withheld": r.Withheld, "created_by": r.CreatedBy, "created_at": r.CreatedAt.UTC().Format(time.RFC3339Nano),
+		"content_withheld": r.Withheld, "owner": r.Owner, "visibility": r.Visibility, "team_id": optional(r.TeamID),
+		"deleted": r.Deleted, "schema_version": r.SchemaVersion, "created_by": r.CreatedBy, "created_at": r.CreatedAt.UTC().Format(time.RFC3339Nano),
 		"updated_by": r.UpdatedBy, "updated_at": r.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 	if r.WithheldReason != "" {
 		out["withheld_reason"] = r.WithheldReason
 	}
+	if r.Replayed {
+		out["replayed"] = true
+	}
 	return out
 }
 
+// ETag is the version tag clients send back in If-Match.
+func (r *Record) ETag() string { return fmt.Sprintf(`"v%d"`, r.Version) }
+
 type Records struct {
-	db       *pgxpool.Pool
-	keys     *Keys
-	sealer   Sealer
-	guard    *Guard
-	MaxBytes int
-	schemas  sync.Map // name@version -> *jsonschema.Schema
+	*Core
+	keys             *Keys
+	receipts         *receipts
+	authz            Authorizer
+	MaxBytes         int
+	MaxResponseBytes int
+	schemas          *cache.LRU[*jsonschema.Schema]
 }
 
 type CollectionInput struct {
-	Name          string
-	Marking       markings.Marking
-	JSONSchema    map[string]any
-	IndexedFields []string
-	Encrypted     *bool
+	Name                 string
+	Marking              markings.Marking
+	JSONSchema           map[string]any
+	IndexedFields        []string
+	UniqueFields         []string
+	Encrypted            *bool
+	HistoryLimit         int
+	DeletedRetentionDays int
 }
 
+// RecordInput is a create or update. Visibility and TeamID apply to create only; use Share to
+// change them later.
+type RecordInput struct {
+	Data       map[string]any
+	Marking    *markings.Marking
+	Visibility string // private (default) | team | app
+	TeamID     string
+}
+
+// ---- schema handling ----------------------------------------------------------------------------
+
+// noRemoteRefs refuses every external reference: schemas are self-contained. Without it the
+// compiler's default loader would read local files named in $ref.
+type noRemoteRefs struct{}
+
+func (noRemoteRefs) Load(string) (any, error) {
+	return nil, errors.New("external $ref is not allowed; collection schemas must be self-contained")
+}
+
+func schemaComplexity(v any, depth int, nodes *int) error {
+	*nodes++
+	if depth > maxSchemaDepth {
+		return errs.Invalid("schema nests deeper than %d levels", maxSchemaDepth)
+	}
+	if *nodes > maxSchemaNodes {
+		return errs.Invalid("schema has more than %d nodes", maxSchemaNodes)
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		for _, c := range x {
+			if err := schemaComplexity(c, depth+1, nodes); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, c := range x {
+			if err := schemaComplexity(c, depth+1, nodes); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// compileSchema runs only after the caller is authorized. It bounds size and complexity, loads
+// nothing from the network or filesystem, and returns sanitized errors.
 func compileSchema(name string, doc map[string]any) (*jsonschema.Schema, error) {
-	c := jsonschema.NewCompiler()
-	c.DefaultDraft(jsonschema.Draft2020)
-	url := "strongbox://collections/" + name + ".json"
-	if err := c.AddResource(url, doc); err != nil {
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, errs.Invalid("schema is not JSON")
+	}
+	if len(raw) > maxSchemaBytes {
+		return nil, errs.Invalid("schema exceeds %d bytes", maxSchemaBytes)
+	}
+	var generic any
+	_ = decodeJSON(raw, &generic)
+	nodes := 0
+	if err := schemaComplexity(generic, 0, &nodes); err != nil {
 		return nil, err
 	}
-	return c.Compile(url)
+	c := jsonschema.NewCompiler()
+	c.DefaultDraft(jsonschema.Draft2020)
+	c.UseLoader(noRemoteRefs{})
+	url := "strongbox:///collections/" + name + ".json"
+	if err := c.AddResource(url, generic); err != nil {
+		return nil, errs.Invalid("invalid JSON Schema")
+	}
+	sch, err := c.Compile(url)
+	if err != nil {
+		return nil, errs.Invalid("invalid JSON Schema: %s", sanitize(err, 200))
+	}
+	return sch, nil
 }
 
-func oneLine(err error, n int) string {
+// sanitize keeps the first line of an error, without control characters, bounded.
+func sanitize(err error, n int) string {
 	s := strings.Join(strings.Fields(err.Error()), " ")
 	if len(s) > n {
 		s = s[:n]
 	}
-	return s
+	return strings.ToValidUTF8(s, "")
 }
+
+func (r *Records) schema(col *Collection) (*jsonschema.Schema, error) {
+	return r.schemas.GetOrLoad(fmt.Sprintf("%s\x00%s\x00%d", col.App, col.Name, col.Version), func() (*jsonschema.Schema, error) {
+		sch, err := compileSchema(col.Name, col.JSONSchema)
+		if err != nil {
+			return nil, errs.Integrity("stored collection schema does not compile")
+		}
+		return sch, nil
+	})
+}
+
+// ---- collections ---------------------------------------------------------------------------------
 
 func (r *Records) CreateCollection(ctx context.Context, c Ctx, in CollectionInput) (*Collection, error) {
 	if !nameRe.MatchString(in.Name) {
@@ -158,16 +293,6 @@ func (r *Records) CreateCollection(ctx context.Context, c Ctx, in CollectionInpu
 			return nil, errs.Invalid("indexed_fields: invalid field name %q", f)
 		}
 	}
-	doc := in.JSONSchema
-	if doc == nil {
-		doc = map[string]any{"type": "object"}
-	}
-	if t, ok := doc["type"]; ok && t != "object" {
-		return nil, errs.Invalid("collection schema must describe a JSON object")
-	}
-	if _, err := compileSchema(in.Name, doc); err != nil {
-		return nil, errs.Invalid("invalid JSON Schema: %s", oneLine(err, 300))
-	}
 	enc := in.Marking.Controlled
 	if in.Encrypted != nil {
 		enc = *in.Encrypted
@@ -175,36 +300,92 @@ func (r *Records) CreateCollection(ctx context.Context, c Ctx, in CollectionInpu
 	if in.Marking.Controlled && !enc {
 		return nil, errs.Invalid("CUI collections must be encrypted")
 	}
-	if _, err := r.guard.Check(ctx, c, auth.CollectionCreate, "collection", in.Name, &in.Marking, CheckOpts{NoConceal: true}); err != nil {
-		return nil, err
+	history := in.HistoryLimit
+	if history == 0 {
+		history = 100
 	}
-	var indexKey *string
-	if enc && len(fields) > 0 {
-		id, _, err := r.keys.Active(ctx, collScope(in.Name), PurposeIndex)
-		if err != nil {
-			return nil, err
-		}
-		indexKey = &id
+	if history < 1 || history > 10000 {
+		return nil, errs.Invalid("history_limit must be between 1 and 10000")
 	}
-	_, err := r.db.Exec(ctx, `INSERT INTO collections (name, marking, encrypted, indexed_fields, json_schema, index_key_id,
-		created_by) VALUES ($1,$2,$3,$4,$5,$6,$7)`, in.Name, in.Marking.Banner(), enc, nonNil(fields), doc, indexKey, c.Principal.Subject)
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		return nil, errs.Conflict("collection %s already exists", in.Name)
+	retention := in.DeletedRetentionDays
+	if retention == 0 {
+		retention = 30
 	}
+	if retention < 1 || retention > 3650 {
+		return nil, errs.Invalid("deleted_retention_days must be between 1 and 3650")
+	}
+	unique, err := uniqueFields(in.UniqueFields, fields)
 	if err != nil {
 		return nil, err
 	}
-	return r.collection(ctx, in.Name)
+	doc := in.JSONSchema
+	if doc == nil {
+		doc = map[string]any{"type": "object"}
+	}
+	var out *Collection
+	err = r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
+		// Authorize before touching the schema document.
+		if !a.AtLeast("editor") {
+			return r.deny(c, auth.CollectionCreate, "collection", in.Name, &in.Marking, "app role "+a.Role+" cannot define collections",
+				errs.Forbidden("defining collections requires the editor or admin role in this app"))
+		}
+		if _, err := r.check(ctx, tx, c, auth.CollectionCreate, "collection", in.Name, &in.Marking, checkOpts{noConceal: true}); err != nil {
+			return err
+		}
+		if t, ok := doc["type"]; ok && t != "object" {
+			return errs.Invalid("collection schema must describe a JSON object")
+		}
+		if _, err := compileSchema(in.Name, doc); err != nil {
+			return err
+		}
+		if op, err := r.receipts.claim(ctx, tx, c, Operation{Type: "collection.create", Target: in.Name, Marking: in.Marking.Banner(),
+			Payload: map[string]any{"schema": doc, "indexed": nonNil(fields), "unique": nonNil(unique), "encrypted": enc, "history": history,
+				"retention": retention}}, 0, ""); err != nil || op != nil {
+			if op != nil {
+				out, err = r.collection(ctx, tx, c.App, in.Name)
+			}
+			return err
+		}
+		var indexKey *string
+		if enc && len(fields) > 0 {
+			id, _, err := r.keys.Active(ctx, tx, c.App, collScope(in.Name), PurposeIndex)
+			if err != nil {
+				return err
+			}
+			indexKey = &id
+		}
+		tag, err := tx.Exec(ctx, `INSERT INTO collections (app, name, marking, encrypted, indexed_fields, unique_fields, json_schema,
+			index_key_id, created_by, token_version, history_limit, deleted_retention_days) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,2,$10,$11)
+			ON CONFLICT DO NOTHING`,
+			c.App, in.Name, in.Marking.Banner(), enc, nonNil(fields), nonNil(unique), doc, indexKey, c.Principal.Subject, history, retention)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return errs.Conflict("collection %s already exists", in.Name)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO collection_versions (app, collection, version, json_schema, indexed_fields,
+			unique_fields, created_by) VALUES ($1,$2,1,$3,$4,$5,$6)`, c.App, in.Name, doc, nonNil(fields), nonNil(unique), c.Principal.Subject); err != nil {
+			return err
+		}
+		if err := r.receipts.complete(ctx, tx, c, "collection", in.Name, 1, nil); err != nil {
+			return err
+		}
+		out, err = r.collection(ctx, tx, c.App, in.Name)
+		return err
+	})
+	return out, err
 }
 
-func (r *Records) collection(ctx context.Context, name string) (*Collection, error) {
-	var col Collection
+func (r *Records) collection(ctx context.Context, tx pgx.Tx, app, name string) (*Collection, error) {
+	col := Collection{App: app}
 	var marking string
-	err := r.db.QueryRow(ctx, `SELECT name, marking, encrypted, indexed_fields, json_schema, index_key_id, version,
-		created_by, created_at FROM collections WHERE name=$1`, name).
-		Scan(&col.Name, &marking, &col.Encrypted, &col.IndexedFields, &col.JSONSchema, &col.IndexKeyID, &col.Version,
-			&col.CreatedBy, &col.CreatedAt)
+	var pending *int
+	err := tx.QueryRow(ctx, `SELECT name, marking, encrypted, indexed_fields, unique_fields, json_schema, index_key_id,
+		token_version, version, history_limit, deleted_retention_days, created_by, created_at, pending_version
+		FROM collections WHERE app = $1 AND name = $2`, app, name).
+		Scan(&col.Name, &marking, &col.Encrypted, &col.IndexedFields, &col.UniqueFields, &col.JSONSchema, &col.IndexKeyID,
+			&col.TokenVersion, &col.Version, &col.HistoryLimit, &col.DeletedRetentionDays, &col.CreatedBy, &col.CreatedAt, &pending)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errs.NotFound("collection not found")
 	}
@@ -214,44 +395,101 @@ func (r *Records) collection(ctx context.Context, name string) (*Collection, err
 	if col.Marking, err = markings.Parse(marking); err != nil {
 		return nil, errs.Integrity("stored marking is invalid")
 	}
+	if pending != nil {
+		if col.Pending, err = r.contractVersion(ctx, tx, &col, *pending); err != nil {
+			return nil, err
+		}
+	}
 	return &col, nil
 }
 
-func (r *Records) GetCollection(ctx context.Context, c Ctx, name string) (*Collection, error) {
-	col, err := r.collection(ctx, name)
+// contractVersion returns col as it is (or would be) under contract version v.
+func (r *Records) contractVersion(ctx context.Context, tx pgx.Tx, col *Collection, v int) (*Collection, error) {
+	out := *col
+	out.Pending = nil
+	out.Version = v
+	err := tx.QueryRow(ctx, `SELECT json_schema, indexed_fields, unique_fields FROM collection_versions
+		WHERE app = $1 AND collection = $2 AND version = $3`, col.App, col.Name, v).Scan(&out.JSONSchema, &out.IndexedFields, &out.UniqueFields)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, errs.NotFound("contract version %d not found", v)
+	}
+	return &out, err
+}
+
+// lockContract serializes contract changes with writes: writers hold the collection's lock shared
+// for their transaction, a contract change or migration flip holds it exclusively. A writer that
+// starts after a change is staged therefore always sees it.
+func lockContract(ctx context.Context, tx pgx.Tx, app, name string, exclusive bool) error {
+	fn := "pg_advisory_xact_lock_shared"
+	if exclusive {
+		fn = "pg_advisory_xact_lock"
+	}
+	_, err := tx.Exec(ctx, `SELECT `+fn+`(hashtextextended('strongbox.contract:' || $1 || '/' || $2, 0))`, app, name)
+	return err
+}
+
+func uniqueFields(unique, indexed []string) ([]string, error) {
+	in := map[string]bool{}
+	for _, f := range indexed {
+		in[f] = true
+	}
+	var out []string
+	for _, f := range union(unique, nil) {
+		if !in[f] {
+			return nil, errs.Invalid("unique field %q must also be an indexed field", f)
+		}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// readableCollection loads a collection and checks the caller may see it.
+func (r *Records) readableCollection(ctx context.Context, tx pgx.Tx, c Ctx, name string, audit bool) (*Collection, error) {
+	col, err := r.collection(ctx, tx, c.App, name)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := r.guard.Check(ctx, c, auth.CollectionRead, "collection", name, &col.Marking, CheckOpts{}); err != nil {
-		return nil, err
-	}
-	return col, nil
+	_, err = r.check(ctx, tx, c, auth.CollectionRead, "collection", name, &col.Marking, checkOpts{skipAllow: !audit})
+	return col, err
+}
+
+func (r *Records) GetCollection(ctx context.Context, c Ctx, name string) (*Collection, error) {
+	var out *Collection
+	err := r.inApp(ctx, c, func(tx pgx.Tx, _ *Access) error {
+		col, err := r.readableCollection(ctx, tx, c, name, true)
+		out = col
+		return err
+	})
+	return out, err
 }
 
 func (r *Records) ListCollections(ctx context.Context, c Ctx) ([]*Collection, error) {
-	if _, err := r.guard.Check(ctx, c, auth.CollectionRead, "collection", "", nil, CheckOpts{SkipAllowAudit: true}); err != nil {
-		return nil, err
-	}
-	rows, err := r.db.Query(ctx, `SELECT name FROM collections ORDER BY name`)
-	if err != nil {
-		return nil, err
-	}
-	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, err
-	}
 	var out []*Collection
-	for _, n := range names {
-		col, err := r.collection(ctx, n)
+	err := r.inApp(ctx, c, func(tx pgx.Tx, _ *Access) error {
+		if _, err := r.check(ctx, tx, c, auth.CollectionRead, "collection", "", nil, checkOpts{skipAllow: true}); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `SELECT name FROM collections WHERE app = $1 ORDER BY name`, c.App)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if r.guard.Peek(c, auth.CollectionRead, &col.Marking).Allowed {
-			out = append(out, col)
+		names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return err
 		}
-	}
-	return out, r.guard.Note(ctx, c, auth.CollectionRead, "collection", "", "allow", "listed collections", nil,
-		map[string]any{"returned": len(out)})
+		for _, n := range names {
+			col, err := r.collection(ctx, tx, c.App, n)
+			if err != nil {
+				return err
+			}
+			if r.Policy.Evaluate(c.Principal, auth.CollectionRead, &col.Marking).Allowed {
+				out = append(out, col)
+			}
+		}
+		return r.note(ctx, tx, c, auth.CollectionRead, "collection", "", "allow", "listed collections", nil,
+			map[string]any{"returned": len(out)})
+	})
+	return out, err
 }
 
 // ---- helpers -------------------------------------------------------------------------------------
@@ -262,28 +500,33 @@ func (r *Records) validate(col *Collection, data map[string]any) error {
 	}
 	raw, _ := json.Marshal(data)
 	if len(raw) > r.MaxBytes {
-		return errs.Invalid("record exceeds %d bytes", r.MaxBytes)
+		return errs.PayloadTooLarge("record exceeds %d bytes", r.MaxBytes)
 	}
-	key := fmt.Sprintf("%s@%d", col.Name, col.Version)
-	cached, ok := r.schemas.Load(key)
-	if !ok {
-		sch, err := compileSchema(col.Name, col.JSONSchema)
-		if err != nil {
-			return errs.Integrity("stored collection schema does not compile")
-		}
-		cached, _ = r.schemas.LoadOrStore(key, sch)
-	}
-	inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(raw)))
+	sch, err := r.schema(col)
 	if err != nil {
+		return err
+	}
+	var inst any
+	if err := decodeJSON(raw, &inst); err != nil {
 		return errs.Invalid("record data must be a JSON object")
 	}
-	if err := cached.(*jsonschema.Schema).Validate(inst); err != nil {
-		return errs.Invalid("schema validation failed: %s", oneLine(err, 500))
+	if err := sch.Validate(inst); err != nil {
+		return errs.Invalid("schema validation failed: %s", sanitize(err, 500))
+	}
+	if col.Pending != nil {
+		psch, err := r.schema(col.Pending)
+		if err != nil {
+			return err
+		}
+		if err := psch.Validate(inst); err != nil {
+			return errs.Invalid("contract version %d (being migrated to) rejects this record: %s", col.Pending.Version, sanitize(err, 500))
+		}
 	}
 	return nil
 }
 
-func (r *Records) recordMarking(col *Collection, m *markings.Marking) (markings.Marking, error) {
+// recordMarking applies the collection default and the storage rules for markings.
+func recordMarking(col *Collection, m *markings.Marking) (markings.Marking, error) {
 	out := col.Marking
 	if m != nil {
 		out = *m
@@ -291,22 +534,47 @@ func (r *Records) recordMarking(col *Collection, m *markings.Marking) (markings.
 	if !out.Dominates(col.Marking) {
 		return out, errs.Invalid("record marking %s cannot be less restrictive than %s", out.Banner(), col.Marking.Banner())
 	}
+	if out.Controlled && !col.Encrypted {
+		return out, errs.Invalid("controlled record (%s) in an unencrypted collection; controlled content is never stored in plaintext", out.Banner())
+	}
 	return out, nil
+}
+
+// sharing validates create-time visibility.
+func sharing(a *Access, visibility, team string) (string, *string, error) {
+	switch visibility {
+	case "", "private":
+		if team != "" {
+			return "", nil, errs.Invalid("team_id applies only to team visibility")
+		}
+		return "private", nil, nil
+	case "app":
+		if team != "" {
+			return "", nil, errs.Invalid("team_id applies only to team visibility")
+		}
+		return "app", nil, nil
+	case "team":
+		if _, ok := a.Teams[team]; !ok {
+			return "", nil, errs.Invalid("team_id must name a team you belong to")
+		}
+		return "team", &team, nil
+	}
+	return "", nil, errs.Invalid("visibility must be private, team or app")
 }
 
 type indexToken struct{ field, token string }
 
-func (r *Records) tokens(ctx context.Context, col *Collection, data map[string]any) ([]indexToken, error) {
+func (r *Records) tokens(ctx context.Context, tx pgx.Tx, col *Collection, data map[string]any) ([]indexToken, error) {
 	var key []byte
 	if col.IndexKeyID != nil {
-		k, err := r.keys.Key(ctx, *col.IndexKeyID, collScope(col.Name))
+		k, err := r.keys.Key(ctx, tx, col.App, *col.IndexKeyID, collScope(col.Name))
 		if err != nil {
 			return nil, err
 		}
 		key = k
 	}
 	var out []indexToken
-	for _, f := range col.IndexedFields {
+	for _, f := range col.indexed() {
 		v, ok := data[f]
 		if !ok {
 			continue
@@ -314,7 +582,9 @@ func (r *Records) tokens(ctx context.Context, col *Collection, data map[string]a
 		var tok string
 		var err error
 		if key != nil {
-			tok, err = BlindToken(key, col.Name, f, v)
+			tok, err = BlindToken(key, col.TokenVersion, col.App, col.Name, f, v)
+		} else if col.Encrypted {
+			return nil, errs.Integrity("encrypted collection has no index key")
 		} else {
 			tok, err = PlainToken(v)
 		}
@@ -326,415 +596,565 @@ func (r *Records) tokens(ctx context.Context, col *Collection, data map[string]a
 	return out, nil
 }
 
-type storage struct {
+// writeIndex replaces a record's equality tokens and uniqueness claims. A unique value already
+// held by another record is a conflict; the error does not say which record holds it, since that
+// record may be invisible to the caller.
+func (r *Records) writeIndex(ctx context.Context, tx pgx.Tx, col *Collection, id string, toks []indexToken) error {
+	_, err := r.writeTokens(ctx, tx, col, id, toks, false)
+	return err
+}
+
+// writeTokens is writeIndex that reports the unique field that could not be claimed instead of
+// failing (the migration job collects these).
+func (r *Records) writeTokens(ctx context.Context, tx pgx.Tx, col *Collection, id string, toks []indexToken, tolerant bool) (string, error) {
+	if _, err := tx.Exec(ctx, `DELETE FROM record_index WHERE app = $1 AND record_id = $2`, col.App, id); err != nil {
+		return "", err
+	}
+	for _, t := range toks {
+		if _, err := tx.Exec(ctx, `INSERT INTO record_index (app, collection, field, token, record_id) VALUES ($1,$2,$3,$4,$5)
+			ON CONFLICT DO NOTHING`, col.App, col.Name, t.field, t.token, id); err != nil {
+			return "", err
+		}
+	}
+	unique := col.unique()
+	if len(unique) == 0 {
+		return "", nil
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM record_unique WHERE app = $1 AND record_id = $2`, col.App, id); err != nil {
+		return "", err
+	}
+	isUnique := map[string]bool{}
+	for _, f := range unique {
+		isUnique[f] = true
+	}
+	for _, t := range toks {
+		if !isUnique[t.field] {
+			continue
+		}
+		tag, err := tx.Exec(ctx, `INSERT INTO record_unique (app, collection, field, token, record_id) VALUES ($1,$2,$3,$4,$5)
+			ON CONFLICT DO NOTHING`, col.App, col.Name, t.field, t.token, id)
+		if err != nil {
+			return "", err
+		}
+		if tag.RowsAffected() == 0 {
+			if tolerant {
+				return t.field, nil
+			}
+			return t.field, errs.Coded(409, "unique_violation", "another record in %s already has this %s", col.Name, t.field)
+		}
+	}
+	return "", nil
+}
+
+type content struct {
 	plain  any
 	sealed []byte
 	keyID  *string
+	size   int
 }
 
-func (r *Records) storageValues(ctx context.Context, col *Collection, id string, data map[string]any, m markings.Marking, version int) (storage, error) {
+func (r *Records) seal(ctx context.Context, tx pgx.Tx, col *Collection, id string, data map[string]any, m markings.Marking, version int) (content, error) {
+	raw, _ := json.Marshal(data)
 	if !col.Encrypted {
-		return storage{plain: data}, nil
+		return content{plain: data, size: len(raw)}, nil
 	}
-	keyID, sealed, err := r.sealer.SealJSON(ctx, collScope(col.Name), recordAAD(col.Name, id, m, version), data)
-	return storage{sealed: sealed, keyID: &keyID}, err
+	keyID, sealed, err := r.keys.SealJSON(ctx, tx, col.App, collScope(col.Name), recordAAD(2, col.App, col.Name, id, m, version), data)
+	return content{sealed: sealed, keyID: &keyID, size: len(raw)}, err
 }
 
 type recordRow struct {
-	id, marking, createdBy, updatedBy string
-	plain                             []byte
-	sealed                            []byte
-	keyID                             *string
-	version                           int
-	createdAt, updatedAt              time.Time
+	id, collection, marking, createdBy, updatedBy, owner, visibility string
+	teamID                                                           *string
+	plain, sealed                                                    []byte
+	keyID                                                            *string
+	version, aadVersion                                              int
+	createdAt, updatedAt                                             time.Time
+	deletedAt                                                        *time.Time
+	schemaVersion                                                    *int
 }
 
-const recordCols = `id, marking, data_plain, data_sealed, key_id, version, created_by, created_at, updated_by, updated_at`
+const recordCols = `id, collection, marking, data_plain, data_sealed, key_id, version, aad_version, owner, visibility, team_id,
+	created_by, created_at, updated_by, updated_at, deleted_at, schema_version`
 
 func scanRecord(row pgx.Row) (*recordRow, error) {
 	var rr recordRow
-	err := row.Scan(&rr.id, &rr.marking, &rr.plain, &rr.sealed, &rr.keyID, &rr.version, &rr.createdBy, &rr.createdAt,
-		&rr.updatedBy, &rr.updatedAt)
+	err := row.Scan(&rr.id, &rr.collection, &rr.marking, &rr.plain, &rr.sealed, &rr.keyID, &rr.version, &rr.aadVersion,
+		&rr.owner, &rr.visibility, &rr.teamID, &rr.createdBy, &rr.createdAt, &rr.updatedBy, &rr.updatedAt, &rr.deletedAt,
+		&rr.schemaVersion)
 	return &rr, err
 }
 
-func (r *Records) row(ctx context.Context, coll, id string) (*recordRow, error) {
-	rr, err := scanRecord(r.db.QueryRow(ctx, `SELECT `+recordCols+` FROM records WHERE id=$1 AND collection=$2
-		AND deleted_at IS NULL`, id, coll))
+func (rr *recordRow) resource() Resource {
+	r := Resource{Kind: "record", ID: rr.id, Owner: rr.owner, Visibility: rr.visibility}
+	if rr.teamID != nil {
+		r.TeamID = *rr.teamID
+	}
+	return r
+}
+
+// row reads a record visible to the caller (RLS). includeDeleted is for history and restore.
+func (r *Records) row(ctx context.Context, tx pgx.Tx, app, coll, id string, includeDeleted bool) (*recordRow, error) {
+	q := `SELECT ` + recordCols + ` FROM records WHERE app = $1 AND collection = $2 AND id = $3`
+	if !includeDeleted {
+		q += ` AND deleted_at IS NULL`
+	}
+	rr, err := scanRecord(tx.QueryRow(ctx, q, app, coll, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errs.NotFound("record not found")
 	}
 	return rr, err
 }
 
-func (r *Records) view(ctx context.Context, col *Collection, rr *recordRow, include bool, reason string) (*Record, error) {
+func (r *Records) open(ctx context.Context, tx pgx.Tx, col *Collection, id string, m markings.Marking, version, aadVersion int,
+	plain, sealed []byte, keyID *string) (map[string]any, error) {
+	var data map[string]any
+	if sealed != nil {
+		if keyID == nil {
+			return nil, errs.Integrity("sealed record has no key")
+		}
+		err := r.keys.OpenJSON(ctx, tx, col.App, collScope(col.Name), *keyID, recordAAD(aadVersion, col.App, col.Name, id, m, version), sealed, &data)
+		return data, err
+	}
+	return data, decodeJSON(plain, &data)
+}
+
+// view builds the response for a row. Content is included only when the policy allows reading it.
+func (r *Records) view(ctx context.Context, tx pgx.Tx, c Ctx, col *Collection, rr *recordRow) (*Record, error) {
 	m, err := markings.Parse(rr.marking)
 	if err != nil {
 		return nil, errs.Integrity("stored marking is invalid")
 	}
-	rec := &Record{ID: rr.id, Collection: col.Name, Marking: m, Version: rr.version, Withheld: !include,
-		WithheldReason: reason, CreatedBy: rr.createdBy, CreatedAt: rr.createdAt, UpdatedBy: rr.updatedBy, UpdatedAt: rr.updatedAt}
-	if !include {
+	rec := &Record{ID: rr.id, Collection: col.Name, Marking: m, Version: rr.version, SchemaVersion: rr.schemaVersion, Owner: rr.owner, Visibility: rr.visibility,
+		Deleted: rr.deletedAt != nil, CreatedBy: rr.createdBy, CreatedAt: rr.createdAt, UpdatedBy: rr.updatedBy, UpdatedAt: rr.updatedAt}
+	if rr.teamID != nil {
+		rec.TeamID = *rr.teamID
+	}
+	if rec.Deleted {
 		return rec, nil
 	}
-	var data map[string]any
-	if rr.sealed != nil {
-		if rr.keyID == nil {
-			return nil, errs.Integrity("sealed record has no key")
-		}
-		err = r.sealer.OpenJSON(ctx, collScope(col.Name), *rr.keyID, recordAAD(col.Name, rr.id, m, rr.version), rr.sealed, &data)
-	} else {
-		err = decodeJSON(rr.plain, &data)
+	if d := r.Policy.Evaluate(c.Principal, auth.RecordReadContent, &m); !d.Allowed {
+		rec.Withheld, rec.WithheldReason = true, d.Reason
+		return rec, nil
 	}
+	rec.Data, err = r.open(ctx, tx, col, rr.id, m, rr.version, rr.aadVersion, rr.plain, rr.sealed, rr.keyID)
+	return rec, err
+}
+
+// writable loads a live record and checks the caller may edit it.
+func (r *Records) writable(ctx context.Context, tx pgx.Tx, c Ctx, a *Access, col *Collection, id string, need Perm, action auth.Action, includeDeleted bool) (*recordRow, markings.Marking, error) {
+	rr, err := r.row(ctx, tx, c.App, col.Name, id, includeDeleted)
 	if err != nil {
-		return nil, err
+		return nil, markings.Marking{}, err
 	}
-	rec.Data = data
-	return rec, nil
-}
-
-func (r *Records) contentAllowed(c Ctx, m markings.Marking) (bool, string) {
-	d := r.guard.Peek(c, auth.RecordReadContent, &m)
-	if d.Allowed {
-		return true, ""
+	m, err := markings.Parse(rr.marking)
+	if err != nil {
+		return nil, m, errs.Integrity("stored marking is invalid")
 	}
-	return false, d.Reason
-}
-
-func requestHash(data map[string]any, m markings.Marking) string {
-	raw, _ := json.Marshal(map[string]any{"d": data, "m": m.Banner()})
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
+	if _, err := r.check(ctx, tx, c, auth.RecordRead, "record", id, &m, checkOpts{skipAllow: true}); err != nil {
+		return nil, m, err
+	}
+	perm, why, err := r.authz.Permissions(ctx, tx, a, rr.resource())
+	if err != nil {
+		return nil, m, err
+	}
+	if !perm.Has(need) {
+		return nil, m, r.deny(c, action, "record", id, &m, "sharing: "+strings.Join(why, ","),
+			errs.Forbidden("you may read this record but not %s it", strings.TrimPrefix(string(action), "record.")))
+	}
+	return rr, m, nil
 }
 
 // ---- records -------------------------------------------------------------------------------------
 
-func (r *Records) Create(ctx context.Context, c Ctx, coll string, data map[string]any, marking *markings.Marking, idemKey string) (*Record, error) {
-	col, err := r.collection(ctx, coll)
-	if err != nil {
-		return nil, err
-	}
-	m, err := r.recordMarking(col, marking)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := r.guard.Check(ctx, c, auth.RecordCreate, "record", "", &m, CheckOpts{SkipAllowAudit: true, NoConceal: true}); err != nil {
-		return nil, err
-	}
-	if err := r.validate(col, data); err != nil {
-		return nil, err
-	}
-	reqHash := requestHash(data, m)
-	if idemKey != "" {
-		if existing, err := r.idempotent(ctx, c, idemKey, reqHash); err != nil || existing != "" {
-			if err != nil {
-				return nil, err
-			}
-			return r.Get(ctx, c, coll, existing)
-		}
-	}
-	id := store.NewID("rec")
-	st, err := r.storageValues(ctx, col, id, data, m, 1)
-	if err != nil {
-		return nil, err
-	}
-	toks, err := r.tokens(ctx, col, data)
-	if err != nil {
-		return nil, err
-	}
-	err = pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO records (id, collection, marking, data_plain, data_sealed, key_id, version,
-			created_by, updated_by) VALUES ($1,$2,$3,$4,$5,$6,1,$7,$7)`, id, col.Name, m.Banner(), st.plain, st.sealed, st.keyID,
-			c.Principal.Subject); err != nil {
+func (r *Records) Create(ctx context.Context, c Ctx, coll string, in RecordInput) (*Record, error) {
+	var out *Record
+	err := r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
+		if err := lockContract(ctx, tx, c.App, coll, false); err != nil {
 			return err
 		}
-		for _, t := range toks {
-			if _, err := tx.Exec(ctx, `INSERT INTO record_index (collection, field, token, record_id) VALUES ($1,$2,$3,$4)`,
-				col.Name, t.field, t.token, id); err != nil {
-				return err
-			}
-		}
-		if idemKey != "" {
-			_, err := tx.Exec(ctx, `INSERT INTO idempotency_keys (principal, resource_type, key, resource_id, request_hash)
-				VALUES ($1,'record',$2,$3,$4)`, c.Principal.Subject, idemKey, id, reqHash)
-			return err
-		}
-		return nil
-	})
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" && idemKey != "" {
-		existing, ierr := r.idempotent(ctx, c, idemKey, reqHash)
-		if ierr != nil {
-			return nil, ierr
-		}
-		if existing != "" {
-			return r.Get(ctx, c, coll, existing)
-		}
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := r.guard.Note(ctx, c, auth.RecordCreate, "record", id, "allow", "record created", &m,
-		map[string]any{"collection": col.Name}); err != nil {
-		return nil, err
-	}
-	rr, err := r.row(ctx, col.Name, id)
-	if err != nil {
-		return nil, err
-	}
-	ok, reason := r.contentAllowed(c, m)
-	return r.view(ctx, col, rr, ok, reason)
-}
-
-func (r *Records) idempotent(ctx context.Context, c Ctx, key, reqHash string) (string, error) {
-	var id string
-	var stored *string
-	err := r.db.QueryRow(ctx, `SELECT resource_id, request_hash FROM idempotency_keys WHERE principal=$1
-		AND resource_type='record' AND key=$2`, c.Principal.Subject, key).Scan(&id, &stored)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	if stored == nil || *stored != reqHash {
-		return "", errs.Conflict("idempotency key was already used with a different request")
-	}
-	return id, nil
-}
-
-func (r *Records) Get(ctx context.Context, c Ctx, coll, id string) (*Record, error) {
-	col, err := r.collection(ctx, coll)
-	if err != nil {
-		return nil, err
-	}
-	rr, err := r.row(ctx, col.Name, id)
-	if err != nil {
-		return nil, err
-	}
-	m, err := markings.Parse(rr.marking)
-	if err != nil {
-		return nil, errs.Integrity("stored marking is invalid")
-	}
-	if _, err := r.guard.Check(ctx, c, auth.RecordRead, "record", id, &m, CheckOpts{SkipAllowAudit: true}); err != nil {
-		return nil, err
-	}
-	d, err := r.guard.Check(ctx, c, auth.RecordReadContent, "record", id, &m, CheckOpts{})
-	if err != nil {
-		return nil, err
-	}
-	reason := ""
-	if !d.Allowed {
-		reason = d.Reason
-	}
-	return r.view(ctx, col, rr, d.Allowed, reason)
-}
-
-func (r *Records) Update(ctx context.Context, c Ctx, coll, id string, data map[string]any, expectedVersion int, marking *markings.Marking) (*Record, error) {
-	col, err := r.collection(ctx, coll)
-	if err != nil {
-		return nil, err
-	}
-	rr, err := r.row(ctx, col.Name, id)
-	if err != nil {
-		return nil, err
-	}
-	current, err := markings.Parse(rr.marking)
-	if err != nil {
-		return nil, errs.Integrity("stored marking is invalid")
-	}
-	if _, err := r.guard.Check(ctx, c, auth.RecordUpdate, "record", id, &current, CheckOpts{}); err != nil {
-		return nil, err
-	}
-	if marking == nil {
-		marking = &current
-	}
-	next, err := r.recordMarking(col, marking)
-	if err != nil {
-		return nil, err
-	}
-	if !next.Dominates(current) {
-		return nil, errs.Invalid("lowering a record's marking (decontrol) is not supported through this API")
-	}
-	if !next.Equal(current) {
-		if _, err := r.guard.Check(ctx, c, auth.RecordUpdate, "record", id, &next, CheckOpts{NoConceal: true}); err != nil {
-			return nil, err
-		}
-	}
-	if rr.version != expectedVersion {
-		return nil, errs.PreconditionFailed("record is at version %d, not %d", rr.version, expectedVersion)
-	}
-	if err := r.validate(col, data); err != nil {
-		return nil, err
-	}
-	version := expectedVersion + 1
-	st, err := r.storageValues(ctx, col, id, data, next, version)
-	if err != nil {
-		return nil, err
-	}
-	toks, err := r.tokens(ctx, col, data)
-	if err != nil {
-		return nil, err
-	}
-	err = pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE records SET marking=$3, data_plain=$4, data_sealed=$5, key_id=$6, version=$7,
-			updated_by=$8, updated_at=now() WHERE id=$1 AND version=$2`, id, expectedVersion, next.Banner(), st.plain,
-			st.sealed, st.keyID, version, c.Principal.Subject)
+		col, err := r.readableCollection(ctx, tx, c, coll, false)
 		if err != nil {
 			return err
 		}
-		if tag.RowsAffected() != 1 {
-			return errs.PreconditionFailed("record was modified concurrently")
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM record_index WHERE record_id=$1`, id); err != nil {
+		m, err := recordMarking(col, in.Marking)
+		if err != nil {
 			return err
 		}
-		for _, t := range toks {
-			if _, err := tx.Exec(ctx, `INSERT INTO record_index (collection, field, token, record_id) VALUES ($1,$2,$3,$4)`,
-				col.Name, t.field, t.token, id); err != nil {
+		vis, team, err := sharing(a, in.Visibility, in.TeamID)
+		if err != nil {
+			return err
+		}
+		op := Operation{Type: "record.create", Target: coll, Marking: m.Banner(),
+			Payload: map[string]any{"data": in.Data, "visibility": vis, "team_id": team}}
+		if rc, err := r.receipts.claim(ctx, tx, c, op, 0, ""); err != nil || rc != nil {
+			if rc != nil {
+				out, err = r.replay(ctx, tx, c, col, rc)
+			}
+			return err
+		}
+		if !a.AtLeast("member") {
+			return r.deny(c, auth.RecordCreate, "record", "", &m, "app role viewer", errs.Forbidden("viewers cannot create records"))
+		}
+		if _, err := r.check(ctx, tx, c, auth.RecordCreate, "record", "", &m, checkOpts{noConceal: true, skipAllow: true}); err != nil {
+			return err
+		}
+		if err := r.validate(col, in.Data); err != nil {
+			return err
+		}
+		id := store.NewID("rec")
+		st, err := r.seal(ctx, tx, col, id, in.Data, m, 1)
+		if err != nil {
+			return err
+		}
+		toks, err := r.tokens(ctx, tx, col, in.Data)
+		if err != nil {
+			return err
+		}
+		rr, err := scanRecord(tx.QueryRow(ctx, `INSERT INTO records (app, id, collection, marking, data_plain, data_sealed, key_id,
+			version, created_by, updated_by, owner, visibility, team_id, aad_version, schema_version)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$8,$8,$9,$10,2,$11) RETURNING `+recordCols,
+			c.App, id, col.Name, m.Banner(), st.plain, st.sealed, st.keyID, c.Principal.Subject, vis, team, col.Version))
+		if err != nil {
+			return err
+		}
+		if err := r.writeIndex(ctx, tx, col, id, toks); err != nil {
+			return err
+		}
+		if err := r.revision(ctx, tx, c, col, rr, "create", st.size); err != nil {
+			return err
+		}
+		if err := r.receipts.complete(ctx, tx, c, "record", id, 1, map[string]any{"collection": col.Name}); err != nil {
+			return err
+		}
+		if err := r.note(ctx, tx, c, auth.RecordCreate, "record", id, "allow", "record stored", &m,
+			map[string]any{"collection": col.Name, "version": 1}); err != nil {
+			return err
+		}
+		out, err = r.view(ctx, tx, c, col, rr)
+		return err
+	})
+	return out, err
+}
+
+func (r *Records) Get(ctx context.Context, c Ctx, coll, id string) (*Record, error) {
+	var out *Record
+	err := r.inApp(ctx, c, func(tx pgx.Tx, _ *Access) error {
+		col, err := r.readableCollection(ctx, tx, c, coll, false)
+		if err != nil {
+			return err
+		}
+		rr, err := r.row(ctx, tx, c.App, coll, id, false)
+		if err != nil {
+			return err
+		}
+		m, err := markings.Parse(rr.marking)
+		if err != nil {
+			return errs.Integrity("stored marking is invalid")
+		}
+		d, err := r.check(ctx, tx, c, auth.RecordRead, "record", id, &m, checkOpts{skipAllow: true})
+		if err != nil {
+			return err
+		}
+		cd := r.Policy.Evaluate(c.Principal, auth.RecordReadContent, &m)
+		reason, action := d.Reason, auth.RecordReadContent
+		if !cd.Allowed {
+			reason, action = cd.Reason, auth.RecordRead
+		}
+		if err := r.note(ctx, tx, c, action, "record", id, "allow", reason, &m, nil); err != nil {
+			return err
+		}
+		out, err = r.view(ctx, tx, c, col, rr)
+		return err
+	})
+	return out, err
+}
+
+// Update replaces a record's data with compare-and-swap on expectedVersion. The returned record is
+// exactly the version this call wrote, authorized for this caller.
+func (r *Records) Update(ctx context.Context, c Ctx, coll, id string, in RecordInput, expectedVersion int) (*Record, error) {
+	var out *Record
+	err := r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
+		if err := lockContract(ctx, tx, c.App, coll, false); err != nil {
+			return err
+		}
+		col, err := r.readableCollection(ctx, tx, c, coll, false)
+		if err != nil {
+			return err
+		}
+		marking := ""
+		if in.Marking != nil {
+			marking = in.Marking.Banner()
+		}
+		op := Operation{Type: "record.update", Target: coll + "/" + id, ExpectedVersion: expectedVersion, Marking: marking,
+			Payload: map[string]any{"data": in.Data}}
+		if rc, err := r.receipts.claim(ctx, tx, c, op, 0, ""); err != nil || rc != nil {
+			if rc != nil {
+				out, err = r.replay(ctx, tx, c, col, rc)
+			}
+			return err
+		}
+		rr, old, err := r.writable(ctx, tx, c, a, col, id, PermWrite, auth.RecordUpdate, false)
+		if err != nil {
+			return err
+		}
+		if rr.version != expectedVersion {
+			return errs.PreconditionFailed("record is at version %d, not %d", rr.version, expectedVersion)
+		}
+		m := old
+		if in.Marking != nil {
+			m = *in.Marking
+		}
+		if m, err = recordMarking(col, &m); err != nil {
+			return err
+		}
+		for _, mk := range []markings.Marking{old, m} {
+			if _, err := r.check(ctx, tx, c, auth.RecordUpdate, "record", id, &mk, checkOpts{noConceal: true, skipAllow: true}); err != nil {
 				return err
 			}
 		}
-		return nil
+		if err := r.validate(col, in.Data); err != nil {
+			return err
+		}
+		next := expectedVersion + 1
+		st, err := r.seal(ctx, tx, col, id, in.Data, m, next)
+		if err != nil {
+			return err
+		}
+		toks, err := r.tokens(ctx, tx, col, in.Data)
+		if err != nil {
+			return err
+		}
+		// Compare-and-swap: concurrent writers serialize on the row lock and the loser's WHERE fails.
+		nr, err := scanRecord(tx.QueryRow(ctx, `UPDATE records SET marking=$5, data_plain=$6, data_sealed=$7, key_id=$8,
+			version=$9, aad_version=2, updated_by=$10, updated_at=now(), schema_version=$11
+			WHERE app=$1 AND collection=$2 AND id=$3 AND version=$4 AND deleted_at IS NULL RETURNING `+recordCols,
+			c.App, col.Name, id, expectedVersion, m.Banner(), st.plain, st.sealed, st.keyID, next, c.Principal.Subject, col.Version))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errs.PreconditionFailed("record changed concurrently; it is no longer at version %d", expectedVersion)
+		}
+		if err != nil {
+			return err
+		}
+		if err := r.writeIndex(ctx, tx, col, id, toks); err != nil {
+			return err
+		}
+		if err := r.revision(ctx, tx, c, col, nr, "update", st.size); err != nil {
+			return err
+		}
+		if err := r.receipts.complete(ctx, tx, c, "record", id, next, map[string]any{"collection": col.Name}); err != nil {
+			return err
+		}
+		if err := r.note(ctx, tx, c, auth.RecordUpdate, "record", id, "allow", "record updated", &m,
+			map[string]any{"collection": col.Name, "version": next, "previous_marking": old.Banner()}); err != nil {
+			return err
+		}
+		out, err = r.view(ctx, tx, c, col, nr)
+		return err
 	})
-	if err != nil {
-		return nil, err
-	}
-	rr, err = r.row(ctx, col.Name, id)
-	if err != nil {
-		return nil, err
-	}
-	ok, reason := r.contentAllowed(c, next)
-	return r.view(ctx, col, rr, ok, reason)
+	return out, err
 }
 
+// Delete soft-deletes with compare-and-swap. The live row keeps no content; history keeps prior
+// versions until history expiry or purge. expectedVersion nil deletes whatever version is current,
+// still atomically. purge removes the row and its history.
 func (r *Records) Delete(ctx context.Context, c Ctx, coll, id string, expectedVersion *int, purge bool) error {
-	col, err := r.collection(ctx, coll)
-	if err != nil {
-		return err
-	}
-	rr, err := r.row(ctx, col.Name, id)
-	if err != nil {
-		return err
-	}
-	m, err := markings.Parse(rr.marking)
-	if err != nil {
-		return errs.Integrity("stored marking is invalid")
-	}
-	if _, err := r.guard.Check(ctx, c, auth.RecordDelete, "record", id, &m, CheckOpts{Details: map[string]any{"purge": purge}}); err != nil {
-		return err
-	}
-	if expectedVersion != nil && rr.version != *expectedVersion {
-		return errs.PreconditionFailed("record is at version %d, not %d", rr.version, *expectedVersion)
-	}
-	return pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `DELETE FROM record_index WHERE record_id=$1`, id); err != nil {
+	return r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
+		col, err := r.readableCollection(ctx, tx, c, coll, false)
+		if err != nil {
+			return err
+		}
+		ev := -1
+		if expectedVersion != nil {
+			ev = *expectedVersion
+		}
+		if rc, err := r.receipts.claim(ctx, tx, c, Operation{Type: "record.delete", Target: coll + "/" + id, ExpectedVersion: ev,
+			Payload: map[string]any{"purge": purge}}, 0, ""); err != nil || rc != nil {
+			return err // a replayed delete succeeded before
+		}
+		rr, m, err := r.writable(ctx, tx, c, a, col, id, PermManage, auth.RecordDelete, false)
+		if err != nil {
+			return err
+		}
+		if expectedVersion != nil && rr.version != *expectedVersion {
+			return errs.PreconditionFailed("record is at version %d, not %d", rr.version, *expectedVersion)
+		}
+		if _, err := r.check(ctx, tx, c, auth.RecordDelete, "record", id, &m, checkOpts{noConceal: true, skipAllow: true}); err != nil {
 			return err
 		}
 		if purge {
-			_, err := tx.Exec(ctx, `DELETE FROM records WHERE id=$1`, id)
+			tag, err := tx.Exec(ctx, `DELETE FROM records WHERE app=$1 AND collection=$2 AND id=$3 AND version=$4`,
+				c.App, col.Name, id, rr.version)
+			if err == nil && tag.RowsAffected() != 1 {
+				err = errs.PreconditionFailed("record changed concurrently")
+			}
+			if err != nil {
+				return err
+			}
+		} else {
+			nr, err := scanRecord(tx.QueryRow(ctx, `UPDATE records SET deleted_at=now(), version=version+1, data_plain=NULL,
+				data_sealed=NULL, key_id=NULL, updated_by=$5, updated_at=now()
+				WHERE app=$1 AND collection=$2 AND id=$3 AND version=$4 AND deleted_at IS NULL RETURNING `+recordCols,
+				c.App, col.Name, id, rr.version, c.Principal.Subject))
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errs.PreconditionFailed("record changed concurrently")
+			}
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `DELETE FROM record_index WHERE app=$1 AND record_id=$2`, c.App, id); err != nil {
+				return err
+			}
+			// A deleted record releases its unique values.
+			if _, err := tx.Exec(ctx, `DELETE FROM record_unique WHERE app=$1 AND record_id=$2`, c.App, id); err != nil {
+				return err
+			}
+			if err := r.revision(ctx, tx, c, col, nr, "delete", 0); err != nil {
+				return err
+			}
+		}
+		if err := r.receipts.complete(ctx, tx, c, "record", id, rr.version+1, map[string]any{"deleted": true, "purged": purge}); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `UPDATE records SET deleted_at=now() WHERE id=$1`, id)
-		return err
+		reason := "record deleted"
+		if purge {
+			reason = "record and history purged"
+		}
+		return r.note(ctx, tx, c, auth.RecordDelete, "record", id, "allow", reason, &m, map[string]any{"collection": col.Name, "purge": purge})
 	})
 }
 
+// Query lists records newest first, optionally filtered by equality on indexed fields.
+//
+// Disclosure rules: a record whose metadata the caller may not see is excluded in SQL, before
+// LIMIT, so page sizes and cursors reveal nothing about it. A filter is an assertion about content,
+// so a filtered query considers only records whose content the caller may read; an agent denied
+// content cannot test candidate values. Results stop early at MaxResponseBytes.
 func (r *Records) Query(ctx context.Context, c Ctx, coll string, filters map[string]any, limit int, cur string) ([]*Record, string, error) {
-	col, err := r.collection(ctx, coll)
-	if err != nil {
-		return nil, "", err
-	}
-	if _, err := r.guard.Check(ctx, c, auth.RecordQuery, "collection", col.Name, &col.Marking, CheckOpts{SkipAllowAudit: true}); err != nil {
-		return nil, "", err
-	}
-	indexed := map[string]bool{}
-	for _, f := range col.IndexedFields {
-		indexed[f] = true
-	}
-	var unknown []string
-	for f := range filters {
-		if !indexed[f] {
-			unknown = append(unknown, f)
-		}
-	}
-	if len(unknown) > 0 {
-		return nil, "", errs.Invalid("can only filter on indexed fields %v; got %v", nonNil(col.IndexedFields), unknown)
-	}
 	n, err := ClampLimit(limit, 20)
 	if err != nil {
 		return nil, "", err
 	}
-	toks, err := r.tokens(ctx, col, filters)
-	if err != nil {
-		return nil, "", err
-	}
-	q := `SELECT ` + recordCols + ` FROM records WHERE collection=$1 AND deleted_at IS NULL`
-	args := []any{col.Name}
-	for _, t := range toks {
-		args = append(args, t.field, t.token)
-		q += fmt.Sprintf(` AND id IN (SELECT record_id FROM record_index WHERE collection=$1 AND field=$%d AND token=$%d)`,
-			len(args)-1, len(args))
-	}
-	if cur != "" {
-		t, cid, err := DecodeCursor(cur)
-		if err != nil {
-			return nil, "", err
-		}
-		args = append(args, t, cid)
-		q += fmt.Sprintf(` AND (created_at < $%d OR (created_at = $%d AND id < $%d))`, len(args)-1, len(args)-1, len(args))
-	}
-	q += fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT %d`, n+1)
-	rows, err := r.db.Query(ctx, q, args...)
-	if err != nil {
-		return nil, "", err
-	}
-	var all []*recordRow
-	for rows.Next() {
-		rr, err := scanRecord(rows)
-		if err != nil {
-			rows.Close()
-			return nil, "", err
-		}
-		all = append(all, rr)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, "", err
-	}
-	more := len(all) > n
-	if more {
-		all = all[:n]
-	}
 	var out []*Record
-	withheld := 0
-	for _, rr := range all {
-		m, err := markings.Parse(rr.marking)
-		if err != nil || !r.guard.Peek(c, auth.RecordRead, &m).Allowed {
-			continue
-		}
-		ok, reason := r.contentAllowed(c, m)
-		if !ok {
-			withheld++
-		}
-		rec, err := r.view(ctx, col, rr, ok, reason)
+	var next string
+	err = r.inApp(ctx, c, func(tx pgx.Tx, _ *Access) error {
+		col, err := r.readableCollection(ctx, tx, c, coll, false)
 		if err != nil {
-			return nil, "", err
+			return err
 		}
-		out = append(out, rec)
+		if _, err := r.check(ctx, tx, c, auth.RecordQuery, "collection", col.Name, &col.Marking, checkOpts{skipAllow: true}); err != nil {
+			return err
+		}
+		indexed := map[string]bool{}
+		for _, f := range col.IndexedFields {
+			indexed[f] = true
+		}
+		var unknown []string
+		for f := range filters {
+			if !indexed[f] {
+				unknown = append(unknown, f)
+			}
+		}
+		if len(unknown) > 0 {
+			return errs.Invalid("can only filter on indexed fields %v; got %v", nonNil(col.IndexedFields), unknown)
+		}
+		need := auth.RecordRead
+		if len(filters) > 0 {
+			need = auth.RecordReadContent
+		}
+		allowed, err := r.allowedMarkings(ctx, tx, c, col, need)
+		if err != nil {
+			return err
+		}
+		toks, err := r.tokens(ctx, tx, col, filters)
+		if err != nil {
+			return err
+		}
+		q := `SELECT ` + recordCols + ` FROM records WHERE app=$1 AND collection=$2 AND deleted_at IS NULL AND marking = ANY($3)`
+		args := []any{c.App, col.Name, allowed}
+		for _, t := range toks {
+			args = append(args, t.field, t.token)
+			q += fmt.Sprintf(` AND id IN (SELECT record_id FROM record_index WHERE app=$1 AND collection=$2 AND field=$%d AND token=$%d)`,
+				len(args)-1, len(args))
+		}
+		if cur != "" {
+			t, cid, err := DecodeCursor(cur, c.App, "records/"+col.Name)
+			if err != nil {
+				return err
+			}
+			args = append(args, t, cid)
+			q += fmt.Sprintf(` AND (created_at, id) < ($%d, $%d)`, len(args)-1, len(args))
+		}
+		q += fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT %d`, n+1)
+		rows, err := tx.Query(ctx, q, args...)
+		if err != nil {
+			return err
+		}
+		all, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (*recordRow, error) { return scanRecord(row) })
+		if err != nil {
+			return err
+		}
+		more := len(all) > n
+		if more {
+			all = all[:n]
+		}
+		withheld, bytes := 0, 0
+		for i, rr := range all {
+			rec, err := r.view(ctx, tx, c, col, rr)
+			if err != nil {
+				return err
+			}
+			if rec.Withheld {
+				withheld++
+			}
+			size := len(rr.plain) + len(rr.sealed)
+			if i > 0 && bytes+size > r.MaxResponseBytes {
+				more, all = true, all[:i]
+				break
+			}
+			bytes += size
+			out = append(out, rec)
+		}
+		if more && len(all) > 0 {
+			last := all[len(all)-1]
+			next = EncodeCursor(c.App, "records/"+col.Name, last.createdAt, last.id)
+		}
+		return r.note(ctx, tx, c, auth.RecordQuery, "collection", col.Name, "allow", "query", &col.Marking,
+			map[string]any{"filters": sortedKeys(filters), "returned": len(out), "content_withheld": withheld})
+	})
+	return out, next, err
+}
+
+// allowedMarkings returns the markings that occur in the collection (from the marking catalog, so
+// no table scan) for which the caller passes the policy for action. The set is used inside SQL, so
+// excluded records never reach LIMIT.
+func (r *Records) allowedMarkings(ctx context.Context, tx pgx.Tx, c Ctx, col *Collection, action auth.Action) ([]string, error) {
+	rows, err := tx.Query(ctx, `SELECT marking FROM marking_catalog WHERE app = $1 AND scope = $2`, c.App, "collection:"+col.Name)
+	if err != nil {
+		return nil, err
 	}
-	fields := make([]string, 0, len(filters))
-	for f := range filters {
-		fields = append(fields, f)
+	present, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
 	}
-	if err := r.guard.Note(ctx, c, auth.RecordQuery, "collection", col.Name, "allow", "queried records", &col.Marking,
-		map[string]any{"filters": fields, "returned": len(out), "withheld": withheld, "scanned": len(all)}); err != nil {
-		return nil, "", err
+	out := []string{}
+	for _, banner := range present {
+		m, err := markings.Parse(banner)
+		if err == nil && r.Policy.Evaluate(c.Principal, action, &m).Allowed {
+			out = append(out, banner)
+		}
 	}
-	next := ""
-	if more && len(all) > 0 {
-		last := all[len(all)-1]
-		next = EncodeCursor(last.createdAt, last.id)
+	return out, nil
+}
+
+func sortedKeys(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
 	}
-	return out, next, nil
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j] < out[j-1]; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
 }

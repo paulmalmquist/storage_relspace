@@ -10,6 +10,8 @@ permissions:
 
 env:
   STRONGBOX_TEST_DATABASE_URL: postgres://postgres:strongbox@localhost:5432/strongbox_test?sslmode=disable
+  # Integration tests fail (instead of skipping) when Postgres is unavailable.
+  STRONGBOX_REQUIRE_INTEGRATION: "1"
 
 jobs:
   go:
@@ -40,42 +42,44 @@ jobs:
         run: GOFIPS140=v1.0.0 GODEBUG=fips140=only go test -count=1 ./...
       - name: Vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: No first-party Python
+        run: |
+          if git ls-files | grep -E '\.py$|(^|/)(pyproject\.toml|setup\.py|setup\.cfg|requirements[^/]*\.txt|Pipfile|poetry\.lock)$'; then
+            echo "Python files or manifests found"; exit 1
+          fi
 
-  python-client:
-    # The Python client against the real Go server.
+  typescript:
     runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: strongbox
-          POSTGRES_DB: strongbox
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 2s --health-retries 30
-    env:
-      STRONGBOX_DATABASE_URL: postgres://postgres:strongbox@localhost:5432/strongbox?sslmode=disable
-      STRONGBOX_DEV_JWT_SECRET: ci-secret-0123456789abcdef0123456789abcdef
+    defaults:
+      run:
+        working-directory: clients/typescript
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.12"
-      - run: go build -o bin/strongbox ./cmd/strongbox
-      - name: Start API
+          node-version: "22"
+      - run: npm ci
+      - name: Types match internal/api/openapi.json
+        run: npm run check-generated
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Unit and contract tests against a live server (restricted login, real Postgres)
         run: |
-          bin/strongbox init
-          bin/strongbox principal put svc-test --kind service -scope '*' -us-person -cui-access -category '*'
-          bin/strongbox serve -addr 127.0.0.1:8080 &
-          for i in $(seq 1 30); do curl -sf localhost:8080/healthz && break; sleep 1; done
-      - run: pip install -e clients/python pytest pytest-asyncio
-      - name: Live client tests
-        env:
-          STRONGBOX_TEST_API_URL: http://127.0.0.1:8080
-        run: STRONGBOX_TEST_TOKEN=$(bin/strongbox token svc-test) pytest -q clients/python/tests
+          PG_ADMIN_URL=postgres://postgres:strongbox@localhost:5432/postgres?sslmode=disable scripts/live-server.sh > .live.env
+          . ./.live.env
+          npm test
+          npm run example
 
   terraform:
     runs-on: ubuntu-latest

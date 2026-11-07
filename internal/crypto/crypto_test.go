@@ -228,3 +228,97 @@ func TestFIPSStatus(t *testing.T) {
 		t.Fatalf("unexpected status %v", s)
 	}
 }
+
+// Stored-format inventory: Python-era SBX1 streams and unknown sealed versions fail with a clear,
+// typed integrity error instead of being guessed at (docs/STORED_FORMATS.md).
+func TestLegacyFormatsFailClearly(t *testing.T) {
+	key := NewDataKey()
+	legacy := append([]byte("SBX1"), make([]byte, 64)...)
+	r, err := NewDecryptingReader(bytes.NewReader(legacy), key, []byte("ctx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.ReadAll(r)
+	if !errs.Is(err, "integrity_violation") || !strings.Contains(err.Error(), "SBX1") {
+		t.Fatalf("SBX1 not rejected clearly: %v", err)
+	}
+	sealed, err := Seal(key, []byte("x"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed[0] = 9
+	if _, err := Open(key, sealed, nil); !errs.Is(err, "integrity_violation") || !strings.Contains(err.Error(), "version 9") {
+		t.Fatalf("unknown sealed version not rejected clearly: %v", err)
+	}
+	other := append([]byte("ZZZZ"), make([]byte, 64)...)
+	r, _ = NewDecryptingReader(bytes.NewReader(other), key, []byte("ctx"))
+	if _, err := io.ReadAll(r); !errs.Is(err, "integrity_violation") || !strings.Contains(err.Error(), "unrecognized") {
+		t.Fatalf("unknown stream format not rejected clearly: %v", err)
+	}
+}
+
+// encryptParts seals pt as parts of partSize (a multiple of chunk), each independently.
+func encryptParts(t *testing.T, key, pt, ctx []byte, partSize int) [][]byte {
+	t.Helper()
+	n := max(1, (len(pt)+partSize-1)/partSize)
+	parts := make([][]byte, n)
+	for i := n - 1; i >= 0; i-- { // out of order on purpose
+		start := i * partSize
+		end := min(start+partSize, len(pt))
+		enc, err := NewPartEncryptor(key, ctx, chunk, uint64(start/chunk), i == n-1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []byte
+		if i == 0 {
+			out = enc.Header()
+		}
+		body, err := enc.Update(pt[start:end])
+		if err != nil {
+			t.Fatal(err)
+		}
+		tail, err := enc.Finalize()
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts[i] = append(append(out, body...), tail...)
+	}
+	return parts
+}
+
+func TestPartsFormOneStream(t *testing.T) {
+	key, ctx := NewDataKey(), []byte("ctx")
+	partSize := 3 * chunk
+	for _, size := range []int{0, 1, partSize - 1, partSize, partSize + 1, 2 * partSize, 7*partSize + 123} {
+		pt := randBytes(size)
+		parts := encryptParts(t, key, pt, ctx, partSize)
+		whole := bytes.Join(parts, nil)
+		if !bytes.Equal(len64(whole), len64(encrypt(t, key, pt, ctx))) {
+			t.Errorf("size %d: parts and stream differ in length", size)
+		}
+		got, err := decrypt(key, whole, ctx)
+		if err != nil || !bytes.Equal(got, pt) {
+			t.Errorf("size %d: parts did not decrypt as one stream: %v", size, err)
+		}
+		if len(parts) < 3 {
+			continue
+		}
+		swapped := bytes.Join([][]byte{parts[0], parts[2], parts[1]}, nil)
+		if _, err := decrypt(key, append(swapped, bytes.Join(parts[3:], nil)...), ctx); !errs.Is(err, "integrity_violation") {
+			t.Errorf("size %d: reordered parts were accepted: %v", size, err)
+		}
+		if _, err := decrypt(key, bytes.Join(parts[:len(parts)-1], nil), ctx); !errs.Is(err, "integrity_violation") {
+			t.Errorf("size %d: a missing last part was accepted: %v", size, err)
+		}
+	}
+	// A part other than the last must be whole segments.
+	enc, _ := NewPartEncryptor(key, ctx, chunk, 0, false)
+	if _, err := enc.Update(randBytes(chunk + 5)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enc.Finalize(); !errs.Is(err, "validation_failed") {
+		t.Errorf("ragged non-final part: %v", err)
+	}
+}
+
+func len64(b []byte) []byte { return binary.BigEndian.AppendUint64(nil, uint64(len(b))) }

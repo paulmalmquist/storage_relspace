@@ -21,10 +21,13 @@ resource "google_storage_bucket" "blobs" {
     retention_duration_seconds = 604800
   }
 
+  # Object keys are never reused (each upload attempt and part has its own key), so a deleted
+  # object never gets newer versions: expire noncurrent versions by age, or they would be kept
+  # forever. This window is part of the retention story in docs/RETENTION.md.
   lifecycle_rule {
     condition {
-      num_newer_versions = 3
-      with_state         = "ARCHIVED"
+      days_since_noncurrent_time = var.blob_noncurrent_retention_days
+      with_state                 = "ARCHIVED"
     }
     action {
       type = "Delete"
@@ -71,6 +74,10 @@ resource "google_sql_database_instance" "pg" {
       value = "on"
     }
     database_flags {
+      name  = "max_connections"
+      value = tostring(var.db_max_connections)
+    }
+    database_flags {
       name  = "log_connections"
       value = "on"
     }
@@ -88,8 +95,17 @@ resource "google_sql_database" "strongbox" {
   instance = google_sql_database_instance.pg.name
 }
 
+# The API's login. `strongbox init -bootstrap-roles -runtime-login <this user>` makes it a member of
+# strongbox_runtime; serve refuses to start if it can bypass row-level security or owns objects.
 resource "google_sql_user" "api" {
   name     = local.api_db_user
+  instance = google_sql_database_instance.pg.name
+  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
+}
+
+# The migration login. It needs CREATEROLE once, for `-bootstrap-roles`; see docs/OPERATIONS.md.
+resource "google_sql_user" "migrate" {
+  name     = local.migrate_db_user
   instance = google_sql_database_instance.pg.name
   type     = "CLOUD_IAM_SERVICE_ACCOUNT"
 }

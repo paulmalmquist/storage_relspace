@@ -41,7 +41,10 @@ const (
 	maxChunks     = 1<<32 - 1
 )
 
-var magic = []byte("SBX2")
+var (
+	magic       = []byte("SBX2")
+	legacyMagic = []byte("SBX1") // Python-era stream format (deterministic nonces); never read
+)
 
 // NewDataKey returns a fresh 256-bit key from the CSPRNG.
 func NewDataKey() []byte {
@@ -73,6 +76,9 @@ func header(chunk int) []byte {
 }
 
 func parseHeader(h []byte) (int, error) {
+	if len(h) >= 4 && bytes.Equal(h[:4], legacyMagic) {
+		return 0, errs.Integrity("legacy SBX1 ciphertext is not supported (see docs/STORED_FORMATS.md)")
+	}
 	if len(h) != HeaderBytes || !bytes.Equal(h[:4], magic) || h[4] != formatVersion || h[5] != algStream {
 		return 0, errs.Integrity("unrecognized ciphertext format")
 	}
@@ -109,6 +115,7 @@ type StreamEncryptor struct {
 	buf     []byte
 	counter uint64
 	done    bool
+	notLast bool // a part of a multipart stream other than the last
 }
 
 func NewStreamEncryptor(key, context []byte, chunk int) (*StreamEncryptor, error) {
@@ -124,6 +131,22 @@ func NewStreamEncryptor(key, context []byte, chunk int) (*StreamEncryptor, error
 }
 
 func (e *StreamEncryptor) Header() []byte { return append([]byte(nil), e.hdr...) }
+
+// NewPartEncryptor seals one part of a stream that is uploaded in parts. The part's first segment
+// has index firstSegment, so parts can be sealed independently, in any order, on any instance.
+// Every part except the last must be a whole number of segments; only the last part's final
+// segment carries the final flag. The first part's ciphertext must be preceded by Header(). The
+// concatenation of header and parts in order is an ordinary stream that NewStreamDecryptor opens,
+// and reordered, missing or extra parts fail authentication.
+func NewPartEncryptor(key, context []byte, chunk int, firstSegment uint64, last bool) (*StreamEncryptor, error) {
+	e, err := NewStreamEncryptor(key, context, chunk)
+	if err != nil {
+		return nil, err
+	}
+	e.counter = firstSegment
+	e.notLast = !last
+	return e, nil
+}
 
 func (e *StreamEncryptor) Update(p []byte) ([]byte, error) {
 	if e.done {
@@ -151,6 +174,14 @@ func (e *StreamEncryptor) Finalize() ([]byte, error) {
 		return nil, errs.Config("encryptor already finalized")
 	}
 	e.done = true
+	if e.notLast {
+		if len(e.buf) != e.chunk {
+			return nil, errs.Invalid("a part other than the last must be a whole number of segments")
+		}
+		out, err := e.seal(e.buf, false)
+		e.buf = nil
+		return out, err
+	}
 	out, err := e.seal(e.buf, true)
 	e.buf = nil
 	return out, err
@@ -292,8 +323,11 @@ func Seal(key, plaintext, aad []byte) ([]byte, error) {
 }
 
 func Open(key, sealed, aad []byte) ([]byte, error) {
-	if len(sealed) < 1+ChunkOverhead || sealed[0] != sealVersion {
+	if len(sealed) < 1+ChunkOverhead {
 		return nil, errs.Integrity("malformed sealed value")
+	}
+	if sealed[0] != sealVersion {
+		return nil, errs.Integrity("unknown sealed value format version %d (see docs/STORED_FORMATS.md)", sealed[0])
 	}
 	aead, err := newAEAD(key)
 	if err != nil {

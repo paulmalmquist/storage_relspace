@@ -8,10 +8,11 @@ import (
 
 // Error is a domain error carried from services to the API and MCP layers.
 type Error struct {
-	Status int
-	Code   string
-	Detail string
-	cause  error
+	Status     int
+	Code       string
+	Detail     string
+	RetryAfter int // seconds; sent as Retry-After when positive
+	cause      error
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Detail }
@@ -23,6 +24,9 @@ func newf(status int, code, format string, args ...any) *Error {
 
 // Wrap attaches a cause while keeping the domain status and code.
 func (e *Error) Wrap(cause error) *Error { e.cause = cause; return e }
+
+// WithRetryAfter tells clients how many seconds to wait before retrying.
+func (e *Error) WithRetryAfter(seconds int) *Error { e.RetryAfter = seconds; return e }
 
 func Unauthenticated(f string, a ...any) *Error { return newf(401, "unauthenticated", f, a...) }
 func Forbidden(f string, a ...any) *Error       { return newf(403, "forbidden", f, a...) }
@@ -40,7 +44,20 @@ func PreconditionRequired(f string, a ...any) *Error {
 
 // Integrity marks ciphertext, wrapped keys or the audit chain failing authentication. Treat as a security event.
 func Integrity(f string, a ...any) *Error { return newf(500, "integrity_violation", f, a...) }
-func Config(f string, a ...any) *Error    { return newf(500, "configuration_error", f, a...) }
+func Internal(f string, a ...any) *Error  { return newf(500, "internal_error", f, a...) }
+
+// TooManyRequests is a rate or in-flight limit; RetryAfter is in seconds.
+func TooManyRequests(f string, a ...any) *Error { return newf(429, "rate_limited", f, a...) }
+
+// Unavailable is a transient dependency failure (pool exhausted, KMS down).
+func Unavailable(f string, a ...any) *Error { return newf(503, "unavailable", f, a...) }
+
+// QuotaExceeded is a durable per-app budget.
+func QuotaExceeded(f string, a ...any) *Error { return newf(507, "quota_exceeded", f, a...) }
+
+// Coded is a conflict-class error with a specific machine-readable code.
+func Coded(status int, code, f string, a ...any) *Error { return newf(status, code, f, a...) }
+func Config(f string, a ...any) *Error                  { return newf(500, "configuration_error", f, a...) }
 
 // As returns the domain error inside err, if any.
 func As(err error) (*Error, bool) {

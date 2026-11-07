@@ -35,6 +35,13 @@ const (
 	RecordUpdate      Action = "record.update"
 	RecordDelete      Action = "record.delete"
 	RecordQuery       Action = "record.query"
+	RecordHistory     Action = "record.history"
+	RecordRestore     Action = "record.restore"
+	RecordShare       Action = "record.share"
+	BlobShare         Action = "blob.share"
+	AppRead           Action = "app.read"
+	AppManage         Action = "app.manage"
+	TeamManage        Action = "team.manage"
 	AuditRead         Action = "audit.read"
 	PrincipalAdmin    Action = "principal.admin"
 )
@@ -44,11 +51,29 @@ var actionScopes = map[Action]string{
 	BlobDelete: "blobs:delete", BlobShred: "blobs:delete", CollectionCreate: "collections:admin",
 	CollectionRead: "records:read", RecordCreate: "records:write", RecordRead: "records:read",
 	RecordReadContent: "records:read", RecordUpdate: "records:write", RecordDelete: "records:delete",
-	RecordQuery: "records:read", AuditRead: "audit:read", PrincipalAdmin: "principals:admin",
+	RecordQuery: "records:read", RecordHistory: "records:read", RecordRestore: "records:write",
+	RecordShare: "records:write", BlobShare: "blobs:write", AppRead: "", AppManage: "apps:manage", TeamManage: "",
+	AuditRead: "audit:read", PrincipalAdmin: "principals:admin",
 }
+
+// Reason codes: stable, machine-readable, and safe to show to an app admin (they name rules, not
+// resources).
+const (
+	CodeAuthorized    = "authorized"
+	CodeUncontrolled  = "uncontrolled"
+	CodeUnknownAction = "unknown_action"
+	CodeMissingScope  = "missing_scope"
+	CodeCUIAccess     = "cui_access_required"
+	CodeCUICategory   = "cui_category_not_authorized"
+	CodeNOFORN        = "noforn_requires_us_person"
+	CodeDissemination = "dissemination_not_authorized"
+	CodeExportControl = "export_controlled_requires_us_person"
+	CodeLLMBoundary   = "llm_boundary_not_authorized"
+)
 
 type Decision struct {
 	Allowed  bool
+	Code     string
 	Reason   string
 	Conceal  bool // deny as "not found" so the caller cannot probe for existence
 	Withheld bool // metadata visible, content not
@@ -69,16 +94,16 @@ func NewPolicy(exportControlled []string) *Policy { return &Policy{export: expor
 func (p *Policy) Evaluate(pr *Principal, action Action, m *markings.Marking) Decision {
 	scope, ok := actionScopes[action]
 	if !ok {
-		return Decision{Reason: "unknown action " + string(action)}
+		return Decision{Code: CodeUnknownAction, Reason: "unknown action " + string(action)}
 	}
-	if !pr.HasScope(scope) {
-		return Decision{Reason: "missing scope " + scope}
+	if scope != "" && !pr.HasScope(scope) {
+		return Decision{Code: CodeMissingScope, Reason: "missing scope " + scope}
 	}
 	if m == nil || !m.Controlled {
-		return Decision{Allowed: true, Reason: "scope " + scope + "; uncontrolled"}
+		return Decision{Allowed: true, Code: CodeUncontrolled, Reason: "scope " + scope + "; uncontrolled"}
 	}
 	if !pr.CUIAccess {
-		return Decision{Reason: "principal is not authorized for CUI", Conceal: true}
+		return Decision{Code: CodeCUIAccess, Reason: "principal is not authorized for CUI", Conceal: true}
 	}
 	var missing []string
 	for _, c := range m.Categories {
@@ -87,24 +112,25 @@ func (p *Policy) Evaluate(pr *Principal, action Action, m *markings.Marking) Dec
 		}
 	}
 	if len(missing) > 0 {
-		return Decision{Reason: fmt.Sprintf("not authorized for CUI categories %v", missing), Conceal: true}
+		return Decision{Code: CodeCUICategory, Reason: fmt.Sprintf("not authorized for CUI categories %v", missing), Conceal: true}
 	}
 	for _, ldc := range m.Dissemination {
 		if ldc == "NOFORN" && !pr.USPerson {
-			return Decision{Reason: "NOFORN requires a U.S. person", Conceal: true}
+			return Decision{Code: CodeNOFORN, Reason: "NOFORN requires a U.S. person", Conceal: true}
 		}
 		if ldc != "NOFORN" && !pr.Dissemination.Has(ldc) {
-			return Decision{Reason: "not authorized for dissemination control " + ldc, Conceal: true}
+			return Decision{Code: CodeDissemination, Reason: "not authorized for dissemination control " + ldc, Conceal: true}
 		}
 	}
 	if m.ExportControlled(p.export) && !pr.USPerson {
-		return Decision{Reason: "export-controlled (ITAR/EAR) data requires a U.S. person", Conceal: true}
+		return Decision{Code: CodeExportControl, Reason: "export-controlled (ITAR/EAR) data requires a U.S. person", Conceal: true}
 	}
 	if (action == BlobReadContent || action == RecordReadContent) && pr.Kind == KindAgent && !pr.LLMBoundaryAuthorized {
 		return Decision{
+			Code:     CodeLLMBoundary,
 			Reason:   "CUI content withheld: this agent is not registered as running inside an authorized LLM boundary",
 			Withheld: true,
 		}
 	}
-	return Decision{Allowed: true, Reason: "scope " + scope + "; authorized for " + m.Banner()}
+	return Decision{Allowed: true, Code: CodeAuthorized, Reason: "scope " + scope + "; authorized for " + m.Banner()}
 }

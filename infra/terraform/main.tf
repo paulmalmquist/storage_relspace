@@ -1,5 +1,10 @@
 locals {
-  api_db_user = trimsuffix(google_service_account.api.email, ".gserviceaccount.com")
+  # Cloud SQL IAM database users are the service account email without ".gserviceaccount.com".
+  api_db_user     = trimsuffix(google_service_account.api.email, ".gserviceaccount.com")
+  migrate_db_user = trimsuffix(google_service_account.migrate.email, ".gserviceaccount.com")
+
+  # Connections at full scale-out, plus 10 for migrations, admin commands and the proxy.
+  db_connections_needed = var.api_max_instances * var.db_pool_size + 10
 
   common_env = {
     STRONGBOX_ENV                  = "production"
@@ -9,10 +14,15 @@ locals {
     STRONGBOX_BLOB_BACKEND         = "gcs"
     STRONGBOX_GCS_BUCKET           = google_storage_bucket.blobs.name
     STRONGBOX_DATABASE_URL         = "postgres://${local.api_db_user}@127.0.0.1:5432/strongbox?sslmode=disable"
+    STRONGBOX_APP_ENV              = var.app_env
+    STRONGBOX_DB_MAX_CONNS         = tostring(var.db_pool_size)
     STRONGBOX_JWT_AUDIENCES        = jsonencode([var.api_audience])
     STRONGBOX_DELEGATION_AUDIENCES = jsonencode([var.api_audience, var.mcp_audience])
     STRONGBOX_REQUIRE_FIPS         = "true"
     STRONGBOX_EXPOSE_DOCS          = "false"
+    STRONGBOX_METRICS_EXPORTER     = "gcp"
+    # Cloud Run caps HTTP/1 request bodies at 32 MiB; larger blobs use upload sessions.
+    STRONGBOX_MAX_SINGLE_UPLOAD_BYTES = "16777216"
   }
 }
 
@@ -25,6 +35,7 @@ resource "google_project_service" "apis" {
     "iam.googleapis.com",
     "logging.googleapis.com",
     "servicenetworking.googleapis.com",
+    "monitoring.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false
@@ -43,6 +54,12 @@ resource "google_service_account" "mcp" {
   display_name = "Strongbox MCP server (API client only; no keys, no data stores)"
 }
 
+# Runs migrations and admin commands. Member of strongbox_owner; the API login is not.
+resource "google_service_account" "migrate" {
+  account_id   = "${var.name}-migrate"
+  display_name = "Strongbox migrations and admin (owns the schema; no KMS or bucket access)"
+}
+
 resource "google_project_iam_member" "api_sql_client" {
   project = var.project_id
   role    = "roles/cloudsql.client"
@@ -53,6 +70,19 @@ resource "google_project_iam_member" "api_sql_user" {
   project = var.project_id
   role    = "roles/cloudsql.instanceUser"
   member  = "serviceAccount:${google_service_account.api.email}"
+}
+
+resource "google_project_iam_member" "api_metrics" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.api.email}"
+}
+
+resource "google_project_iam_member" "migrate_sql" {
+  for_each = toset(["roles/cloudsql.client", "roles/cloudsql.instanceUser"])
+  project  = var.project_id
+  role     = each.value
+  member   = "serviceAccount:${google_service_account.migrate.email}"
 }
 
 # ---------------------------------------------------------------------------------------------

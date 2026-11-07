@@ -1,2279 +1,5210 @@
 {
-  "openapi": "3.1.0",
-  "info": {
-    "title": "Strongbox",
-    "description": "\nInter-service API for CUI-grade blob and structured data storage.\n\n* Authenticate with `Authorization: Bearer <OIDC ID token>` (Google-signed for Cloud Run/GKE workloads).\n* Agents and services acting for a user also send `X-On-Behalf-Of: <user token>`; access is the\n  intersection of both principals.\n* Every CUI response carries `X-Strongbox-Marking` with its banner; propagate it downstream.\n* Errors are `application/problem+json` with a stable `code`.\n",
-    "version": "0.2.0"
-  },
-  "paths": {
-    "/v1/whoami": {
-      "get": {
-        "tags": [
-          "identity"
-        ],
-        "summary": "Whoami",
-        "operationId": "whoami_v1_whoami_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WhoAmI"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
+ "openapi": "3.1.0",
+ "info": {
+  "title": "Strongbox",
+  "version": "1.0.0",
+  "description": "Shared persistence for Dreamcatcher apps: personal state, team records, app-wide data and encrypted attachments.\n\n* Authenticate with `Authorization: Bearer <OIDC ID token>`. A registered app client acting for a member also sends `X-On-Behalf-Of: <user token>`; access is the intersection of both principals.\n* App data lives under `/v1/apps/{app}`. The deployment fixes the environment. Naming an app selects it; membership grants access. Resources are private to their owner unless shared with a team, the whole app, or by explicit grant.\n* Every CUI response carries `X-Strongbox-Marking`; propagate it downstream.\n* Mutations accept `Idempotency-Key`. A retry returns the original result (re-authorized); see `GET /v1/apps/{app}/operations/{op_id}`.\n* Errors are `application/problem+json` with a stable `code`.\n"
+ },
+ "security": [
+  {
+   "bearer": []
+  }
+ ],
+ "paths": {
+  "/v1/whoami": {
+   "get": {
+    "operationId": "whoami",
+    "summary": "The authenticated (and possibly delegated) principal",
+    "tags": [
+     "identity"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/WhoAmI"
         }
+       }
       }
-    },
-    "/v1/principals": {
-      "get": {
-        "tags": [
-          "admin"
-        ],
-        "summary": "List Principals",
-        "operationId": "list_principals_v1_principals_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
-                  "title": "Response List Principals V1 Principals Get"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/principals/{subject}": {
-      "put": {
-        "tags": [
-          "admin"
-        ],
-        "summary": "Put Principal",
-        "operationId": "put_principal_v1_principals__subject__put",
-        "parameters": [
-          {
-            "name": "subject",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Subject"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PrincipalIn"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Put Principal V1 Principals  Subject  Put"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/audit/events": {
-      "get": {
-        "tags": [
-          "audit"
-        ],
-        "summary": "Audit Events",
-        "operationId": "audit_events_v1_audit_events_get",
-        "parameters": [
-          {
-            "name": "after_seq",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "minimum": 0,
-              "default": 0,
-              "title": "After Seq"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 1000,
-              "minimum": 1,
-              "default": 100,
-              "title": "Limit"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AuditList"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/audit/verify": {
-      "get": {
-        "tags": [
-          "audit"
-        ],
-        "summary": "Audit Verify",
-        "operationId": "audit_verify_v1_audit_verify_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AuditVerify"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/blobs": {
-      "post": {
-        "tags": [
-          "blobs"
-        ],
-        "summary": "Upload a blob (raw request body)",
-        "operationId": "upload_blob_v1_blobs_post",
-        "parameters": [
-          {
-            "name": "x-strongbox-marking",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "description": "CUI banner, e.g. CUI//SP-EXPT//NOFORN, or UNCONTROLLED",
-              "title": "X-Strongbox-Marking"
-            },
-            "description": "CUI banner, e.g. CUI//SP-EXPT//NOFORN, or UNCONTROLLED"
-          },
-          {
-            "name": "x-strongbox-filename",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Percent-encoded original filename",
-              "title": "X-Strongbox-Filename"
-            },
-            "description": "Percent-encoded original filename"
-          },
-          {
-            "name": "x-strongbox-metadata",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "base64url(JSON object), sealed at rest",
-              "title": "X-Strongbox-Metadata"
-            },
-            "description": "base64url(JSON object), sealed at rest"
-          },
-          {
-            "name": "idempotency-key",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Idempotency-Key"
-            }
-          },
-          {
-            "name": "content-type",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "application/octet-stream",
-              "title": "Content-Type"
-            }
-          },
-          {
-            "name": "content-length",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Content-Length"
-            }
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BlobOut"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/octet-stream": {
-              "schema": {
-                "type": "string",
-                "format": "binary"
-              }
-            }
-          }
-        }
-      },
-      "get": {
-        "tags": [
-          "blobs"
-        ],
-        "summary": "List Blobs",
-        "operationId": "list_blobs_v1_blobs_get",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "maximum": 200,
-                  "minimum": 1
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Limit"
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Cursor"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BlobList"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/blobs/{blob_id}": {
-      "get": {
-        "tags": [
-          "blobs"
-        ],
-        "summary": "Get Blob",
-        "operationId": "get_blob_v1_blobs__blob_id__get",
-        "parameters": [
-          {
-            "name": "blob_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Blob Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BlobOut"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "blobs"
-        ],
-        "summary": "Delete Blob",
-        "operationId": "delete_blob_v1_blobs__blob_id__delete",
-        "parameters": [
-          {
-            "name": "blob_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Blob Id"
-            }
-          },
-          {
-            "name": "shred",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "description": "Destroy the data key and object; irreversible",
-              "default": false,
-              "title": "Shred"
-            },
-            "description": "Destroy the data key and object; irreversible"
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Successful Response"
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/blobs/{blob_id}/content": {
-      "get": {
-        "tags": [
-          "blobs"
-        ],
-        "summary": "Download Blob",
-        "operationId": "download_blob_v1_blobs__blob_id__content_get",
-        "parameters": [
-          {
-            "name": "blob_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Blob Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Decrypted content",
-            "content": {
-              "application/octet-stream": {}
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/collections": {
-      "get": {
-        "tags": [
-          "records"
-        ],
-        "summary": "List Collections",
-        "operationId": "list_collections_v1_collections_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CollectionList"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "records"
-        ],
-        "summary": "Create Collection",
-        "operationId": "create_collection_v1_collections_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CollectionIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CollectionOut"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/collections/{name}": {
-      "get": {
-        "tags": [
-          "records"
-        ],
-        "summary": "Get Collection",
-        "operationId": "get_collection_v1_collections__name__get",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Name"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CollectionOut"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/collections/{name}/records": {
-      "post": {
-        "tags": [
-          "records"
-        ],
-        "summary": "Create Record",
-        "operationId": "create_record_v1_collections__name__records_post",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Name"
-            }
-          },
-          {
-            "name": "idempotency-key",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Idempotency-Key"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RecordIn"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RecordOut"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/collections/{name}/records/{record_id}": {
-      "get": {
-        "tags": [
-          "records"
-        ],
-        "summary": "Get Record",
-        "operationId": "get_record_v1_collections__name__records__record_id__get",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Name"
-            }
-          },
-          {
-            "name": "record_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Record Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RecordOut"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "tags": [
-          "records"
-        ],
-        "summary": "Update Record",
-        "operationId": "update_record_v1_collections__name__records__record_id__put",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Name"
-            }
-          },
-          {
-            "name": "record_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Record Id"
-            }
-          },
-          {
-            "name": "if-match",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "If-Match"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RecordIn"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RecordOut"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "records"
-        ],
-        "summary": "Delete Record",
-        "operationId": "delete_record_v1_collections__name__records__record_id__delete",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Name"
-            }
-          },
-          {
-            "name": "record_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Record Id"
-            }
-          },
-          {
-            "name": "purge",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "description": "Remove the row instead of soft-deleting it",
-              "default": false,
-              "title": "Purge"
-            },
-            "description": "Remove the row instead of soft-deleting it"
-          },
-          {
-            "name": "if-match",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "If-Match"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Successful Response"
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/collections/{name}/query": {
-      "post": {
-        "tags": [
-          "records"
-        ],
-        "summary": "Query Records",
-        "operationId": "query_records_v1_collections__name__query_post",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Name"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/QueryIn"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/QueryOut"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthenticated",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden or content withheld",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found (also returned when access is denied, to avoid an existence oracle)",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation failed",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            }
-          }
-        }
-      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
     }
+   }
   },
-  "components": {
-    "schemas": {
-      "AuditEvent": {
-        "properties": {
-          "seq": {
-            "type": "integer",
-            "title": "Seq"
-          },
-          "ts": {
-            "type": "string",
-            "title": "Ts"
-          },
-          "request_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Request Id"
-          },
-          "actor": {
-            "type": "string",
-            "title": "Actor"
-          },
-          "actor_kind": {
-            "type": "string",
-            "title": "Actor Kind"
-          },
-          "on_behalf_of": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "On Behalf Of"
-          },
-          "action": {
-            "type": "string",
-            "title": "Action"
-          },
-          "resource_type": {
-            "type": "string",
-            "title": "Resource Type"
-          },
-          "resource_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Resource Id"
-          },
-          "marking": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Marking"
-          },
-          "decision": {
-            "type": "string",
-            "title": "Decision"
-          },
-          "reason": {
-            "type": "string",
-            "title": "Reason"
-          },
-          "details": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Details"
-          },
-          "prev_hash": {
-            "type": "string",
-            "title": "Prev Hash"
-          },
-          "hash": {
-            "type": "string",
-            "title": "Hash"
-          }
-        },
-        "type": "object",
-        "required": [
-          "seq",
-          "ts",
-          "request_id",
-          "actor",
-          "actor_kind",
-          "on_behalf_of",
-          "action",
-          "resource_type",
-          "resource_id",
-          "marking",
-          "decision",
-          "reason",
-          "details",
-          "prev_hash",
-          "hash"
-        ],
-        "title": "AuditEvent"
+  "/v1/limits": {
+   "get": {
+    "operationId": "getLimits",
+    "summary": "Request limits this deployment enforces",
+    "tags": [
+     "identity"
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Limits"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/principals": {
+   "get": {
+    "operationId": "listPrincipals",
+    "summary": "List principals (principals:admin)",
+    "tags": [
+     "admin"
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PrincipalList"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/principals/{subject}": {
+   "put": {
+    "operationId": "putPrincipal",
+    "summary": "Create or update a principal (principals:admin)",
+    "tags": [
+     "admin"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/subject"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PrincipalPutOut"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PrincipalIn"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/audit/events": {
+   "get": {
+    "operationId": "listGlobalAuditEvents",
+    "summary": "Global audit chain (audit:read)",
+    "tags": [
+     "audit"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/chain"
+     },
+     {
+      "$ref": "#/components/parameters/afterSeq"
+     },
+     {
+      "$ref": "#/components/parameters/auditLimit"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AuditList"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/audit/verify": {
+   "get": {
+    "operationId": "verifyGlobalAudit",
+    "summary": "Verify the global audit chain (audit:read)",
+    "tags": [
+     "audit"
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AuditVerify"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}": {
+   "get": {
+    "operationId": "getApp",
+    "summary": "Your role and teams in the app",
+    "tags": [
+     "apps"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AppInfo"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/members": {
+   "get": {
+    "operationId": "listMembers",
+    "summary": "App members",
+    "tags": [
+     "apps"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MemberList"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/members/{subject}": {
+   "put": {
+    "operationId": "putMember",
+    "summary": "Add a member or change a role (app admin + apps:manage)",
+    "tags": [
+     "apps"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/subject"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MemberPutOut"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RoleIn"
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "operationId": "removeMember",
+    "summary": "Remove a member (app admin + apps:manage)",
+    "tags": [
+     "apps"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/subject"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Removed"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/teams": {
+   "get": {
+    "operationId": "listTeams",
+    "summary": "Teams in the app",
+    "tags": [
+     "apps"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TeamList"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   },
+   "post": {
+    "operationId": "createTeam",
+    "summary": "Create a team; you become its admin",
+    "tags": [
+     "apps"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "201": {
+      "description": "Created",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Team"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/TeamIn"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/teams/{team}/members/{subject}": {
+   "put": {
+    "operationId": "putTeamMember",
+    "summary": "Add a team member or change their team role",
+    "tags": [
+     "apps"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/team"
+     },
+     {
+      "$ref": "#/components/parameters/subject"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TeamMemberPutOut"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/TeamRoleIn"
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "operationId": "removeTeamMember",
+    "summary": "Remove a team member (anyone may leave)",
+    "tags": [
+     "apps"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/team"
+     },
+     {
+      "$ref": "#/components/parameters/subject"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Removed"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/blobs": {
+   "post": {
+    "operationId": "uploadBlob",
+    "summary": "Upload a blob in one request (up to max_single_upload_bytes)",
+    "tags": [
+     "blobs"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/MarkingIn"
+     },
+     {
+      "$ref": "#/components/parameters/Filename"
+     },
+     {
+      "$ref": "#/components/parameters/BlobMetadata"
+     },
+     {
+      "$ref": "#/components/parameters/Visibility"
+     },
+     {
+      "$ref": "#/components/parameters/Team"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "201": {
+      "description": "Stored",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BlobOut"
+        }
+       }
       },
-      "AuditList": {
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/AuditEvent"
-            },
-            "type": "array",
-            "title": "Items"
-          }
-        },
-        "type": "object",
-        "required": [
-          "items"
-        ],
-        "title": "AuditList"
-      },
-      "AuditVerify": {
-        "properties": {
-          "ok": {
-            "type": "boolean",
-            "title": "Ok"
-          },
-          "checked": {
-            "type": "integer",
-            "title": "Checked"
-          },
-          "head_seq": {
-            "type": "integer",
-            "title": "Head Seq"
-          },
-          "first_invalid_seq": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "First Invalid Seq"
-          }
-        },
-        "type": "object",
-        "required": [
-          "ok",
-          "checked",
-          "head_seq",
-          "first_invalid_seq"
-        ],
-        "title": "AuditVerify"
-      },
-      "BlobList": {
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/BlobOut"
-            },
-            "type": "array",
-            "title": "Items"
-          },
-          "next_cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Cursor"
-          }
-        },
-        "type": "object",
-        "required": [
-          "items",
-          "next_cursor"
-        ],
-        "title": "BlobList"
-      },
-      "BlobOut": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "marking": {
-            "type": "string",
-            "title": "Marking"
-          },
-          "content_type": {
-            "type": "string",
-            "title": "Content Type"
-          },
-          "size_bytes": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Size Bytes"
-          },
-          "filename": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Filename"
-          },
-          "metadata": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Metadata"
-          },
-          "state": {
-            "type": "string",
-            "title": "State"
-          },
-          "created_by": {
-            "type": "string",
-            "title": "Created By"
-          },
-          "created_at": {
-            "type": "string",
-            "title": "Created At"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "marking",
-          "content_type",
-          "size_bytes",
-          "filename",
-          "metadata",
-          "state",
-          "created_by",
-          "created_at"
-        ],
-        "title": "BlobOut"
-      },
-      "CollectionIn": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "title": "Name"
-          },
-          "marking": {
-            "type": "string",
-            "title": "Marking"
-          },
-          "json_schema": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Json Schema"
-          },
-          "indexed_fields": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Indexed Fields"
-          },
-          "encrypted": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Encrypted"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "name",
-          "marking"
-        ],
-        "title": "CollectionIn"
-      },
-      "CollectionList": {
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/CollectionOut"
-            },
-            "type": "array",
-            "title": "Items"
-          }
-        },
-        "type": "object",
-        "required": [
-          "items"
-        ],
-        "title": "CollectionList"
-      },
-      "CollectionOut": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "title": "Name"
-          },
-          "marking": {
-            "type": "string",
-            "title": "Marking"
-          },
-          "encrypted": {
-            "type": "boolean",
-            "title": "Encrypted"
-          },
-          "indexed_fields": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Indexed Fields"
-          },
-          "json_schema": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Json Schema"
-          },
-          "version": {
-            "type": "integer",
-            "title": "Version"
-          },
-          "created_by": {
-            "type": "string",
-            "title": "Created By"
-          },
-          "created_at": {
-            "type": "string",
-            "title": "Created At"
-          }
-        },
-        "type": "object",
-        "required": [
-          "name",
-          "marking",
-          "encrypted",
-          "indexed_fields",
-          "json_schema",
-          "version",
-          "created_by",
-          "created_at"
-        ],
-        "title": "CollectionOut"
-      },
-      "PrincipalIn": {
-        "properties": {
-          "kind": {
-            "$ref": "#/components/schemas/PrincipalKind"
-          },
-          "display_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Display Name"
-          },
-          "scopes": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Scopes"
-          },
-          "us_person": {
-            "type": "boolean",
-            "title": "Us Person",
-            "default": false
-          },
-          "cui_access": {
-            "type": "boolean",
-            "title": "Cui Access",
-            "default": false
-          },
-          "cui_categories": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Cui Categories"
-          },
-          "dissemination": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Dissemination"
-          },
-          "llm_boundary_authorized": {
-            "type": "boolean",
-            "title": "Llm Boundary Authorized",
-            "default": false
-          },
-          "disabled": {
-            "type": "boolean",
-            "title": "Disabled",
-            "default": false
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "kind"
-        ],
-        "title": "PrincipalIn"
-      },
-      "PrincipalKind": {
+      "headers": {
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "200": {
+      "description": "Replayed (same Idempotency-Key, same content)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BlobOut"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "413": {
+      "$ref": "#/components/responses/TooLarge"
+     },
+     "507": {
+      "$ref": "#/components/responses/Quota"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/octet-stream": {
+       "schema": {
         "type": "string",
-        "enum": [
-          "user",
-          "service",
-          "agent"
-        ],
-        "title": "PrincipalKind"
-      },
-      "QueryIn": {
-        "properties": {
-          "filters": {
-            "additionalProperties": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "type": "object",
-            "title": "Filters"
-          },
-          "limit": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 200.0,
-                "minimum": 1.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Limit"
-          },
-          "cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cursor"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "QueryIn"
-      },
-      "QueryOut": {
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/RecordOut"
-            },
-            "type": "array",
-            "title": "Items"
-          },
-          "next_cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Cursor"
-          },
-          "marking": {
-            "type": "string",
-            "title": "Marking",
-            "description": "Roll-up banner covering every item in this page"
-          }
-        },
-        "type": "object",
-        "required": [
-          "items",
-          "next_cursor",
-          "marking"
-        ],
-        "title": "QueryOut"
-      },
-      "RecordIn": {
-        "properties": {
-          "data": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Data"
-          },
-          "marking": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Marking"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "data"
-        ],
-        "title": "RecordIn"
-      },
-      "RecordOut": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "collection": {
-            "type": "string",
-            "title": "Collection"
-          },
-          "marking": {
-            "type": "string",
-            "title": "Marking"
-          },
-          "version": {
-            "type": "integer",
-            "title": "Version"
-          },
-          "data": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Data"
-          },
-          "content_withheld": {
-            "type": "boolean",
-            "title": "Content Withheld"
-          },
-          "withheld_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Withheld Reason"
-          },
-          "created_by": {
-            "type": "string",
-            "title": "Created By"
-          },
-          "created_at": {
-            "type": "string",
-            "title": "Created At"
-          },
-          "updated_by": {
-            "type": "string",
-            "title": "Updated By"
-          },
-          "updated_at": {
-            "type": "string",
-            "title": "Updated At"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "collection",
-          "marking",
-          "version",
-          "data",
-          "content_withheld",
-          "created_by",
-          "created_at",
-          "updated_by",
-          "updated_at"
-        ],
-        "title": "RecordOut"
-      },
-      "WhoAmI": {
-        "properties": {
-          "subject": {
-            "type": "string",
-            "title": "Subject"
-          },
-          "kind": {
-            "type": "string",
-            "title": "Kind"
-          },
-          "actor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Actor"
-          },
-          "display_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Display Name"
-          },
-          "scopes": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Scopes"
-          },
-          "us_person": {
-            "type": "boolean",
-            "title": "Us Person"
-          },
-          "cui_access": {
-            "type": "boolean",
-            "title": "Cui Access"
-          },
-          "cui_categories": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Cui Categories"
-          },
-          "dissemination": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Dissemination"
-          },
-          "llm_boundary_authorized": {
-            "type": "boolean",
-            "title": "Llm Boundary Authorized"
-          }
-        },
-        "type": "object",
-        "required": [
-          "subject",
-          "kind",
-          "actor",
-          "display_name",
-          "scopes",
-          "us_person",
-          "cui_access",
-          "cui_categories",
-          "dissemination",
-          "llm_boundary_authorized"
-        ],
-        "title": "WhoAmI"
-      },
-      "Problem": {
-        "type": "object",
-        "title": "Problem",
-        "required": [
-          "type",
-          "title",
-          "status",
-          "code",
-          "detail"
-        ],
-        "properties": {
-          "type": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "status": {
-            "type": "integer"
-          },
-          "code": {
-            "type": "string",
-            "description": "Stable machine-readable error code"
-          },
-          "detail": {
-            "type": "string"
-          },
-          "request_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
+        "format": "binary"
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "operationId": "listBlobs",
+    "summary": "List blobs visible to you, newest first",
+    "tags": [
+     "blobs"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/limit"
+     },
+     {
+      "$ref": "#/components/parameters/cursor"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BlobList"
         }
+       }
       }
-    },
-    "securitySchemes": {
-      "bearer": {
-        "type": "http",
-        "scheme": "bearer",
-        "bearerFormat": "JWT"
-      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
     }
+   }
   },
-  "security": [
-    {
-      "bearer": []
+  "/v1/apps/{app}/uploads": {
+   "post": {
+    "operationId": "createUpload",
+    "summary": "Start an upload session for a blob larger than one request allows",
+    "tags": [
+     "uploads"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "201": {
+      "description": "Session created; the declared size is reserved against the app's quota",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UploadSession"
+        }
+       }
+      },
+      "headers": {
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "200": {
+      "description": "Replayed (same Idempotency-Key)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UploadSession"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "413": {
+      "$ref": "#/components/responses/TooLarge"
+     },
+     "507": {
+      "$ref": "#/components/responses/Quota"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/UploadIn"
+       }
+      }
+     }
+    },
+    "description": "Send each part with PUT .../parts/{n}: exactly part_size bytes, the last part the remainder. Parts may be sent in any order and retried. Then POST .../complete."
+   }
+  },
+  "/v1/apps/{app}/uploads/{id}": {
+   "get": {
+    "operationId": "getUpload",
+    "summary": "Session state, including which parts have arrived (to resume)",
+    "tags": [
+     "uploads"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UploadSession"
+        }
+       }
+      },
+      "headers": {
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
     }
-  ]
+   },
+   "delete": {
+    "operationId": "abortUpload",
+    "summary": "Abort a pending session; its parts are deleted by the worker",
+    "tags": [
+     "uploads"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Aborted"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/uploads/{id}/parts/{n}": {
+   "put": {
+    "operationId": "putUploadPart",
+    "summary": "Store one part (replaces an earlier copy of the same part)",
+    "tags": [
+     "uploads"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/part"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PartOut"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "413": {
+      "$ref": "#/components/responses/TooLarge"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/octet-stream": {
+       "schema": {
+        "type": "string",
+        "format": "binary"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/uploads/{id}/complete": {
+   "post": {
+    "operationId": "completeUpload",
+    "summary": "Activate the blob once every part is present with its exact size",
+    "tags": [
+     "uploads"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "201": {
+      "description": "Stored",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BlobOut"
+        }
+       }
+      },
+      "headers": {
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "200": {
+      "description": "Already completed",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BlobOut"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/usage": {
+   "get": {
+    "operationId": "getUsage",
+    "summary": "What the app stores against its quota",
+    "tags": [
+     "apps"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Usage"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/blobs/{id}": {
+   "get": {
+    "operationId": "getBlob",
+    "summary": "Blob metadata",
+    "tags": [
+     "blobs"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BlobOut"
+        }
+       }
+      },
+      "headers": {
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   },
+   "delete": {
+    "operationId": "deleteBlob",
+    "summary": "Delete (object removed by the worker); shred=true also destroys the wrapped data key",
+    "tags": [
+     "blobs"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/shred"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Deleted"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/blobs/{id}/content": {
+   "get": {
+    "operationId": "downloadBlob",
+    "summary": "Stream decrypted content",
+    "tags": [
+     "blobs"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/octet-stream": {
+        "schema": {
+         "type": "string",
+         "format": "binary"
+        }
+       }
+      },
+      "headers": {
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/blobs/{id}/sharing": {
+   "put": {
+    "operationId": "setBlobSharing",
+    "summary": "Change visibility (share permission)",
+    "tags": [
+     "sharing"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SharingOut"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SharingIn"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/blobs/{id}/grants": {
+   "get": {
+    "operationId": "listBlobGrants",
+    "summary": "Grants on a blob (share permission)",
+    "tags": [
+     "sharing"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/GrantList"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   },
+   "post": {
+    "operationId": "addBlobGrant",
+    "summary": "Grant viewer/editor access",
+    "tags": [
+     "sharing"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "201": {
+      "description": "Granted",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Grant"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/GrantIn"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/blobs/{id}/grants/{grant}": {
+   "delete": {
+    "operationId": "removeBlobGrant",
+    "summary": "Revoke a grant",
+    "tags": [
+     "sharing"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/grant"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Revoked"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections": {
+   "post": {
+    "operationId": "createCollection",
+    "summary": "Define a collection (editor/admin role + collections:admin)",
+    "tags": [
+     "records"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "201": {
+      "description": "Created",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CollectionOut"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/CollectionIn"
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "operationId": "listCollections",
+    "summary": "Collections you may read",
+    "tags": [
+     "records"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CollectionList"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}": {
+   "get": {
+    "operationId": "getCollection",
+    "summary": "A collection's contract",
+    "tags": [
+     "records"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/CollectionOut"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/contract": {
+   "put": {
+    "operationId": "changeContract",
+    "summary": "Stage a new contract version (editor/admin role + collections:admin)",
+    "tags": [
+     "contracts"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Took effect at once: every record valid before is provably valid now",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ContractChange"
+        }
+       }
+      }
+     },
+     "202": {
+      "description": "Migration started; the collection switches when every live record passes",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ContractChange"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "412": {
+      "$ref": "#/components/responses/PreconditionFailed"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ContractIn"
+       }
+      }
+     }
+    },
+    "description": "While a migration runs, writes must satisfy both contracts. Unique fields must be indexed; a unique violation (409 unique_violation) never names the record holding the value."
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/versions": {
+   "get": {
+    "operationId": "contractVersions",
+    "summary": "Every contract version, newest first",
+    "tags": [
+     "contracts"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ContractVersions"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/migrations/{id}": {
+   "get": {
+    "operationId": "getMigration",
+    "summary": "A contract migration's progress",
+    "tags": [
+     "contracts"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Migration"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/migrations/{id}/cancel": {
+   "post": {
+    "operationId": "cancelMigration",
+    "summary": "Abandon a running migration; the collection keeps its version",
+    "tags": [
+     "contracts"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Migration"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/records": {
+   "post": {
+    "operationId": "createRecord",
+    "summary": "Create a record (private unless visibility says otherwise)",
+    "tags": [
+     "records"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "201": {
+      "description": "Created",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RecordOut"
+        }
+       }
+      },
+      "headers": {
+       "ETag": {
+        "$ref": "#/components/headers/ETag"
+       },
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "200": {
+      "description": "Replayed (same Idempotency-Key)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RecordOut"
+        }
+       }
+      },
+      "headers": {
+       "ETag": {
+        "$ref": "#/components/headers/ETag"
+       },
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "413": {
+      "$ref": "#/components/responses/TooLarge"
+     },
+     "507": {
+      "$ref": "#/components/responses/Quota"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RecordIn"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/query": {
+   "post": {
+    "operationId": "queryRecords",
+    "summary": "Equality query on indexed fields, newest first",
+    "tags": [
+     "records"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/QueryOut"
+        }
+       }
+      },
+      "headers": {
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/QueryIn"
+       }
+      }
+     }
+    },
+    "description": "Records you may not see never count toward the page. A filter is an assertion about content, so filtered queries consider only records whose content you may read."
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/records/{id}": {
+   "get": {
+    "operationId": "getRecord",
+    "summary": "Read a record",
+    "tags": [
+     "records"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RecordOut"
+        }
+       }
+      },
+      "headers": {
+       "ETag": {
+        "$ref": "#/components/headers/ETag"
+       },
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   },
+   "put": {
+    "operationId": "updateRecord",
+    "summary": "Replace a record's data (compare-and-swap on If-Match)",
+    "tags": [
+     "records"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/IfMatchRequired"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RecordOut"
+        }
+       }
+      },
+      "headers": {
+       "ETag": {
+        "$ref": "#/components/headers/ETag"
+       },
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "412": {
+      "$ref": "#/components/responses/PreconditionFailed"
+     },
+     "413": {
+      "$ref": "#/components/responses/TooLarge"
+     },
+     "428": {
+      "$ref": "#/components/responses/PreconditionRequired"
+     },
+     "507": {
+      "$ref": "#/components/responses/Quota"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RecordIn"
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "operationId": "deleteRecord",
+    "summary": "Delete a record (history kept unless purge=true)",
+    "tags": [
+     "records"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/IfMatch"
+     },
+     {
+      "$ref": "#/components/parameters/purge"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Deleted"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "412": {
+      "$ref": "#/components/responses/PreconditionFailed"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/records/{id}/history": {
+   "get": {
+    "operationId": "recordHistory",
+    "summary": "Versions, newest first",
+    "tags": [
+     "history"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/before"
+     },
+     {
+      "$ref": "#/components/parameters/limit"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HistoryOut"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/records/{id}/history/{version}": {
+   "get": {
+    "operationId": "recordRevision",
+    "summary": "A version's content (authorized against that version's marking)",
+    "tags": [
+     "history"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/version"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RecordOut"
+        }
+       }
+      },
+      "headers": {
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/records/{id}/restore": {
+   "post": {
+    "operationId": "restoreRecord",
+    "summary": "Undo: make an earlier version current as a new version",
+    "tags": [
+     "history"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/IfMatchRequired"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/RecordOut"
+        }
+       }
+      },
+      "headers": {
+       "ETag": {
+        "$ref": "#/components/headers/ETag"
+       },
+       "X-Strongbox-Marking": {
+        "$ref": "#/components/headers/Marking"
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "412": {
+      "$ref": "#/components/responses/PreconditionFailed"
+     },
+     "428": {
+      "$ref": "#/components/responses/PreconditionRequired"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RestoreIn"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/records/{id}/sharing": {
+   "put": {
+    "operationId": "setRecordSharing",
+    "summary": "Change visibility (share permission)",
+    "tags": [
+     "sharing"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SharingOut"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SharingIn"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/records/{id}/grants": {
+   "get": {
+    "operationId": "listRecordGrants",
+    "summary": "Grants on a record (share permission)",
+    "tags": [
+     "sharing"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/GrantList"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   },
+   "post": {
+    "operationId": "addRecordGrant",
+    "summary": "Grant viewer/editor access",
+    "tags": [
+     "sharing"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "201": {
+      "description": "Granted",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Grant"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/GrantIn"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/records/{id}/grants/{grant}": {
+   "delete": {
+    "operationId": "removeRecordGrant",
+    "summary": "Revoke a grant",
+    "tags": [
+     "sharing"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/grant"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Revoked"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/operations/{op_id}": {
+   "get": {
+    "operationId": "getOperation",
+    "summary": "Status of your own operation (after a lost response)",
+    "tags": [
+     "operations"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/op_id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Receipt"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/explain": {
+   "post": {
+    "operationId": "explainAccess",
+    "summary": "Why a subject can or cannot act on a resource (app admin + apps:manage)",
+    "tags": [
+     "apps"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Explanation"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ExplainIn"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/audit/events": {
+   "get": {
+    "operationId": "listAppAuditEvents",
+    "summary": "One audit chain of the app (app admin + audit:read)",
+    "tags": [
+     "audit"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/chain"
+     },
+     {
+      "$ref": "#/components/parameters/afterSeq"
+     },
+     {
+      "$ref": "#/components/parameters/auditLimit"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AuditList"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/audit/verify": {
+   "get": {
+    "operationId": "verifyAppAudit",
+    "summary": "Verify every audit chain of the app (app admin + audit:read)",
+    "tags": [
+     "audit"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AuditVerify"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "securitySchemes": {
+   "bearer": {
+    "type": "http",
+    "scheme": "bearer",
+    "bearerFormat": "JWT"
+   }
+  },
+  "parameters": {
+   "app": {
+    "name": "app",
+    "in": "path",
+    "required": true,
+    "description": "App identifier. The deployment fixes the environment; naming an app selects it and grants nothing.",
+    "schema": {
+     "type": "string",
+     "pattern": "^[a-z][a-z0-9-]{1,39}$"
+    }
+   },
+   "name": {
+    "name": "name",
+    "in": "path",
+    "required": true,
+    "description": "Collection name",
+    "schema": {
+     "type": "string",
+     "pattern": "^[a-z][a-z0-9_]{1,62}$"
+    }
+   },
+   "id": {
+    "name": "id",
+    "in": "path",
+    "required": true,
+    "description": "Resource identifier",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "subject": {
+    "name": "subject",
+    "in": "path",
+    "required": true,
+    "description": "Principal subject",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "team": {
+    "name": "team",
+    "in": "path",
+    "required": true,
+    "description": "Team identifier",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "grant": {
+    "name": "grant",
+    "in": "path",
+    "required": true,
+    "description": "Grant identifier",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "version": {
+    "name": "version",
+    "in": "path",
+    "required": true,
+    "description": "Record version",
+    "schema": {
+     "type": "integer"
+    }
+   },
+   "part": {
+    "name": "n",
+    "in": "path",
+    "required": true,
+    "description": "Part number, 1-based",
+    "schema": {
+     "type": "integer",
+     "minimum": 1
+    }
+   },
+   "op_id": {
+    "name": "op_id",
+    "in": "path",
+    "required": true,
+    "description": "Operation ID (the Idempotency-Key you sent)",
+    "schema": {
+     "type": "string",
+     "pattern": "^[A-Za-z0-9._:~-]{8,128}$"
+    }
+   },
+   "limit": {
+    "name": "limit",
+    "in": "query",
+    "required": false,
+    "description": "Page size (1-200)",
+    "schema": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 200
+    }
+   },
+   "auditLimit": {
+    "name": "limit",
+    "in": "query",
+    "required": false,
+    "description": "Page size (1-1000)",
+    "schema": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 1000
+    }
+   },
+   "cursor": {
+    "name": "cursor",
+    "in": "query",
+    "required": false,
+    "description": "Opaque cursor from next_cursor (bound to this app and listing)",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "before": {
+    "name": "before",
+    "in": "query",
+    "required": false,
+    "description": "Return versions below this one (from next_before)",
+    "schema": {
+     "type": "integer",
+     "minimum": 0
+    }
+   },
+   "chain": {
+    "name": "chain",
+    "in": "query",
+    "required": false,
+    "description": "Audit chain (from the chains list)",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "afterSeq": {
+    "name": "after_seq",
+    "in": "query",
+    "required": false,
+    "description": "Return events after this sequence number",
+    "schema": {
+     "type": "integer",
+     "minimum": 0
+    }
+   },
+   "shred": {
+    "name": "shred",
+    "in": "query",
+    "required": false,
+    "description": "Also destroy the wrapped data key",
+    "schema": {
+     "type": "boolean"
+    }
+   },
+   "purge": {
+    "name": "purge",
+    "in": "query",
+    "required": false,
+    "description": "Remove the record and its history",
+    "schema": {
+     "type": "boolean"
+    }
+   },
+   "IdempotencyKey": {
+    "name": "Idempotency-Key",
+    "in": "header",
+    "required": false,
+    "description": "Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409.",
+    "schema": {
+     "type": "string",
+     "pattern": "^[A-Za-z0-9._:~-]{8,128}$"
+    }
+   },
+   "IfMatch": {
+    "name": "If-Match",
+    "in": "header",
+    "required": false,
+    "description": "Current ETag, e.g. \"v3\"",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "IfMatchRequired": {
+    "name": "If-Match",
+    "in": "header",
+    "required": true,
+    "description": "Current ETag, e.g. \"v3\"",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "OnBehalfOf": {
+    "name": "X-On-Behalf-Of",
+    "in": "header",
+    "required": false,
+    "description": "User token when a registered app client acts for a member; access is the intersection of both.",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "MarkingIn": {
+    "name": "X-Strongbox-Marking",
+    "in": "header",
+    "required": true,
+    "description": "CUI marking banner, or UNCONTROLLED",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "Filename": {
+    "name": "X-Strongbox-Filename",
+    "in": "header",
+    "required": false,
+    "description": "Percent-encoded filename (sealed at rest)",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "BlobMetadata": {
+    "name": "X-Strongbox-Metadata",
+    "in": "header",
+    "required": false,
+    "description": "base64url JSON object (sealed at rest)",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "Visibility": {
+    "name": "X-Strongbox-Visibility",
+    "in": "header",
+    "required": false,
+    "description": "private (default), team or app",
+    "schema": {
+     "type": "string",
+     "enum": [
+      "private",
+      "team",
+      "app"
+     ]
+    }
+   },
+   "Team": {
+    "name": "X-Strongbox-Team",
+    "in": "header",
+    "required": false,
+    "description": "Team ID when visibility is team",
+    "schema": {
+     "type": "string"
+    }
+   }
+  },
+  "headers": {
+   "Marking": {
+    "description": "CUI banner of the content; propagate it downstream",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "ETag": {
+    "description": "Version tag for If-Match, e.g. \"v3\"",
+    "schema": {
+     "type": "string"
+    }
+   }
+  },
+  "responses": {
+   "Unauthenticated": {
+    "description": "Missing or invalid credentials",
+    "content": {
+     "application/problem+json": {
+      "schema": {
+       "$ref": "#/components/schemas/Problem"
+      }
+     }
+    }
+   },
+   "Forbidden": {
+    "description": "Denied (code: forbidden or content_withheld)",
+    "content": {
+     "application/problem+json": {
+      "schema": {
+       "$ref": "#/components/schemas/Problem"
+      }
+     }
+    }
+   },
+   "NotFound": {
+    "description": "Not found; also returned when access is denied, so existence cannot be probed",
+    "content": {
+     "application/problem+json": {
+      "schema": {
+       "$ref": "#/components/schemas/Problem"
+      }
+     }
+    }
+   },
+   "Invalid": {
+    "description": "Validation failed",
+    "content": {
+     "application/problem+json": {
+      "schema": {
+       "$ref": "#/components/schemas/Problem"
+      }
+     }
+    }
+   },
+   "Conflict": {
+    "description": "Conflict (codes: conflict, idempotency_key_reused, operation_in_progress, upload_expired, upload_incomplete, unique_violation, migration_in_progress, migration_finished)",
+    "content": {
+     "application/problem+json": {
+      "schema": {
+       "$ref": "#/components/schemas/Problem"
+      }
+     }
+    }
+   },
+   "PreconditionFailed": {
+    "description": "If-Match does not match the current version",
+    "content": {
+     "application/problem+json": {
+      "schema": {
+       "$ref": "#/components/schemas/Problem"
+      }
+     }
+    }
+   },
+   "PreconditionRequired": {
+    "description": "If-Match is required",
+    "content": {
+     "application/problem+json": {
+      "schema": {
+       "$ref": "#/components/schemas/Problem"
+      }
+     }
+    }
+   },
+   "TooLarge": {
+    "description": "Request exceeds an advertised limit (see GET /v1/limits)",
+    "content": {
+     "application/problem+json": {
+      "schema": {
+       "$ref": "#/components/schemas/Problem"
+      }
+     }
+    }
+   },
+   "TooMany": {
+    "description": "Rate or concurrency limit; retry after Retry-After",
+    "content": {
+     "application/problem+json": {
+      "schema": {
+       "$ref": "#/components/schemas/Problem"
+      }
+     }
+    }
+   },
+   "Unavailable": {
+    "description": "Temporarily unavailable (database, KMS); retry after Retry-After",
+    "content": {
+     "application/problem+json": {
+      "schema": {
+       "$ref": "#/components/schemas/Problem"
+      }
+     }
+    }
+   },
+   "Quota": {
+    "description": "The app's storage quota is exhausted",
+    "content": {
+     "application/problem+json": {
+      "schema": {
+       "$ref": "#/components/schemas/Problem"
+      }
+     }
+    }
+   }
+  },
+  "schemas": {
+   "Problem": {
+    "type": "object",
+    "properties": {
+     "type": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     },
+     "status": {
+      "type": "integer"
+     },
+     "code": {
+      "type": "string",
+      "description": "Stable machine-readable code"
+     },
+     "detail": {
+      "type": "string"
+     },
+     "request_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": true,
+    "required": [
+     "status",
+     "code",
+     "detail"
+    ]
+   },
+   "WhoAmI": {
+    "type": "object",
+    "properties": {
+     "subject": {
+      "type": "string"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "user",
+       "service",
+       "agent"
+      ]
+     },
+     "actor": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "display_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "scopes": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "us_person": {
+      "type": "boolean"
+     },
+     "cui_access": {
+      "type": "boolean"
+     },
+     "cui_categories": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "dissemination": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "llm_boundary_authorized": {
+      "type": "boolean"
+     }
+    },
+    "additionalProperties": true,
+    "required": [
+     "subject",
+     "kind",
+     "scopes"
+    ]
+   },
+   "Limits": {
+    "type": "object",
+    "properties": {
+     "max_single_upload_bytes": {
+      "type": "integer"
+     },
+     "max_blob_bytes": {
+      "type": "integer"
+     },
+     "upload_session": {
+      "type": "object",
+      "properties": {
+       "part_size": {
+        "type": "integer"
+       },
+       "max_parts": {
+        "type": "integer"
+       },
+       "session_ttl_seconds": {
+        "type": "integer"
+       }
+      },
+      "additionalProperties": false,
+      "required": [
+       "part_size",
+       "max_parts"
+      ]
+     },
+     "max_blob_metadata_bytes": {
+      "type": "integer"
+     },
+     "max_record_bytes": {
+      "type": "integer"
+     },
+     "max_page": {
+      "type": "integer"
+     },
+     "chunk_size": {
+      "type": "integer"
+     },
+     "app_env": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": true,
+    "required": [
+     "max_single_upload_bytes",
+     "max_blob_bytes",
+     "upload_session",
+     "max_record_bytes",
+     "max_page"
+    ]
+   },
+   "UploadIn": {
+    "type": "object",
+    "properties": {
+     "size_bytes": {
+      "type": "integer",
+      "minimum": 0
+     },
+     "marking": {
+      "type": "string"
+     },
+     "content_type": {
+      "type": "string"
+     },
+     "filename": {
+      "type": "string",
+      "maxLength": 255
+     },
+     "metadata": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "visibility": {
+      "type": "string",
+      "enum": [
+       "private",
+       "team",
+       "app"
+      ]
+     },
+     "team_id": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "size_bytes",
+     "marking"
+    ]
+   },
+   "UploadSession": {
+    "type": "object",
+    "properties": {
+     "upload_id": {
+      "type": "string"
+     },
+     "blob_id": {
+      "type": "string"
+     },
+     "marking": {
+      "type": "string"
+     },
+     "size_bytes": {
+      "type": "integer"
+     },
+     "part_size": {
+      "type": "integer"
+     },
+     "part_count": {
+      "type": "integer"
+     },
+     "received_parts": {
+      "type": "array",
+      "items": {
+       "type": "integer"
+      }
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "pending",
+       "active",
+       "aborted",
+       "deleted",
+       "shredded",
+       "purged"
+      ]
+     },
+     "expires_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "replayed": {
+      "type": "boolean"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "upload_id",
+     "blob_id",
+     "marking",
+     "size_bytes",
+     "part_size",
+     "part_count",
+     "received_parts",
+     "state"
+    ]
+   },
+   "PartOut": {
+    "type": "object",
+    "properties": {
+     "part_number": {
+      "type": "integer"
+     },
+     "size_bytes": {
+      "type": "integer"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "part_number",
+     "size_bytes"
+    ]
+   },
+   "Usage": {
+    "type": "object",
+    "properties": {
+     "app": {
+      "type": "string"
+     },
+     "blob_bytes": {
+      "type": "integer"
+     },
+     "blobs": {
+      "type": "integer"
+     },
+     "reserved_bytes": {
+      "type": "integer"
+     },
+     "records": {
+      "type": "integer"
+     },
+     "record_bytes": {
+      "type": "integer"
+     },
+     "max_blob_bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "max_blobs": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "max_records": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "max_record_bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "app",
+     "blob_bytes",
+     "blobs",
+     "reserved_bytes",
+     "records",
+     "record_bytes"
+    ]
+   },
+   "PrincipalIn": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "user",
+       "service",
+       "agent"
+      ]
+     },
+     "display_name": {
+      "type": "string"
+     },
+     "scopes": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "us_person": {
+      "type": "boolean"
+     },
+     "cui_access": {
+      "type": "boolean"
+     },
+     "cui_categories": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "dissemination": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "llm_boundary_authorized": {
+      "type": "boolean"
+     },
+     "disabled": {
+      "type": "boolean"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "kind"
+    ]
+   },
+   "PrincipalList": {
+    "type": "object",
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "additionalProperties": true
+      }
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "items"
+    ]
+   },
+   "PrincipalPutOut": {
+    "type": "object",
+    "properties": {
+     "subject": {
+      "type": "string"
+     },
+     "updated": {
+      "type": "boolean"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "subject",
+     "updated"
+    ]
+   },
+   "AuditEvent": {
+    "type": "object",
+    "properties": {
+     "chain": {
+      "type": "string"
+     },
+     "app": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "seq": {
+      "type": "integer"
+     },
+     "ts": {
+      "type": "string"
+     },
+     "request_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "actor": {
+      "type": "string"
+     },
+     "actor_kind": {
+      "type": "string"
+     },
+     "on_behalf_of": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "action": {
+      "type": "string"
+     },
+     "resource_type": {
+      "type": "string"
+     },
+     "resource_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "marking": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "decision": {
+      "type": "string",
+      "enum": [
+       "allow",
+       "deny",
+       "error"
+      ]
+     },
+     "reason": {
+      "type": "string"
+     },
+     "details": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "format": {
+      "type": "integer"
+     },
+     "prev_hash": {
+      "type": "string"
+     },
+     "hash": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": true,
+    "required": [
+     "chain",
+     "seq",
+     "ts",
+     "actor",
+     "action",
+     "decision",
+     "hash"
+    ]
+   },
+   "AuditList": {
+    "type": "object",
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/AuditEvent"
+      }
+     },
+     "chains": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "items",
+     "chains"
+    ]
+   },
+   "ChainResult": {
+    "type": "object",
+    "properties": {
+     "chain": {
+      "type": "string"
+     },
+     "ok": {
+      "type": "boolean"
+     },
+     "checked": {
+      "type": "integer"
+     },
+     "head_seq": {
+      "type": "integer"
+     },
+     "first_invalid_seq": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "chain",
+     "ok",
+     "checked",
+     "head_seq"
+    ]
+   },
+   "AuditVerify": {
+    "type": "object",
+    "properties": {
+     "ok": {
+      "type": "boolean"
+     },
+     "chains": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/ChainResult"
+      }
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "ok",
+     "chains"
+    ]
+   },
+   "AppInfo": {
+    "type": "object",
+    "properties": {
+     "app": {
+      "type": "string"
+     },
+     "role": {
+      "type": "string",
+      "enum": [
+       "viewer",
+       "member",
+       "editor",
+       "admin"
+      ]
+     },
+     "teams": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string",
+       "enum": [
+        "viewer",
+        "editor",
+        "admin"
+       ]
+      }
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "app",
+     "role",
+     "teams"
+    ]
+   },
+   "Member": {
+    "type": "object",
+    "properties": {
+     "subject": {
+      "type": "string"
+     },
+     "role": {
+      "type": "string",
+      "enum": [
+       "viewer",
+       "member",
+       "editor",
+       "admin"
+      ]
+     },
+     "added_by": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "subject",
+     "role"
+    ]
+   },
+   "MemberList": {
+    "type": "object",
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Member"
+      }
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "items"
+    ]
+   },
+   "RoleIn": {
+    "type": "object",
+    "properties": {
+     "role": {
+      "type": "string",
+      "enum": [
+       "viewer",
+       "member",
+       "editor",
+       "admin"
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "role"
+    ]
+   },
+   "MemberPutOut": {
+    "type": "object",
+    "properties": {
+     "subject": {
+      "type": "string"
+     },
+     "role": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "subject",
+     "role"
+    ]
+   },
+   "TeamIn": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "name"
+    ]
+   },
+   "Team": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "created_by": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "members": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "name",
+     "members"
+    ]
+   },
+   "TeamList": {
+    "type": "object",
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Team"
+      }
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "items"
+    ]
+   },
+   "TeamRoleIn": {
+    "type": "object",
+    "properties": {
+     "role": {
+      "type": "string",
+      "enum": [
+       "viewer",
+       "editor",
+       "admin"
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "role"
+    ]
+   },
+   "TeamMemberPutOut": {
+    "type": "object",
+    "properties": {
+     "team_id": {
+      "type": "string"
+     },
+     "subject": {
+      "type": "string"
+     },
+     "role": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "team_id",
+     "subject",
+     "role"
+    ]
+   },
+   "SharingIn": {
+    "type": "object",
+    "properties": {
+     "visibility": {
+      "type": "string",
+      "enum": [
+       "private",
+       "team",
+       "app"
+      ]
+     },
+     "team_id": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "visibility"
+    ]
+   },
+   "SharingOut": {
+    "type": "object",
+    "properties": {
+     "visibility": {
+      "type": "string",
+      "enum": [
+       "private",
+       "team",
+       "app"
+      ]
+     },
+     "team_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "visibility"
+    ]
+   },
+   "GrantIn": {
+    "type": "object",
+    "properties": {
+     "subject": {
+      "type": "string"
+     },
+     "team_id": {
+      "type": "string"
+     },
+     "role": {
+      "type": "string",
+      "enum": [
+       "viewer",
+       "editor"
+      ]
+     },
+     "can_share": {
+      "type": "boolean"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "role"
+    ]
+   },
+   "Grant": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "subject": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "team_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "role": {
+      "type": "string",
+      "enum": [
+       "viewer",
+       "editor"
+      ]
+     },
+     "can_share": {
+      "type": "boolean"
+     },
+     "granted_by": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "role",
+     "can_share",
+     "granted_by"
+    ]
+   },
+   "GrantList": {
+    "type": "object",
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Grant"
+      }
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "items"
+    ]
+   },
+   "ExplainIn": {
+    "type": "object",
+    "properties": {
+     "subject": {
+      "type": "string"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "record",
+       "blob"
+      ]
+     },
+     "collection": {
+      "type": "string"
+     },
+     "id": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "subject",
+     "kind",
+     "id"
+    ]
+   },
+   "Rule": {
+    "type": "object",
+    "properties": {
+     "allowed": {
+      "type": "boolean"
+     },
+     "code": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "allowed",
+     "code"
+    ]
+   },
+   "Explanation": {
+    "type": "object",
+    "properties": {
+     "subject": {
+      "type": "string"
+     },
+     "app_role": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "permissions": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "sharing_reasons": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "policy": {
+      "type": "object",
+      "additionalProperties": {
+       "$ref": "#/components/schemas/Rule"
+      }
+     },
+     "allowed": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "boolean"
+      }
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "subject",
+     "permissions",
+     "sharing_reasons",
+     "policy",
+     "allowed"
+    ]
+   },
+   "Receipt": {
+    "type": "object",
+    "properties": {
+     "op_id": {
+      "type": "string"
+     },
+     "op_type": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "pending",
+       "succeeded"
+      ]
+     },
+     "resource_type": {
+      "type": "string"
+     },
+     "resource_id": {
+      "type": "string"
+     },
+     "resource_version": {
+      "type": "integer"
+     },
+     "result": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "completed_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "op_id",
+     "op_type",
+     "status",
+     "result"
+    ]
+   },
+   "BlobOut": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "marking": {
+      "type": "string"
+     },
+     "content_type": {
+      "type": "string"
+     },
+     "size_bytes": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "filename": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "metadata": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "state": {
+      "type": "string"
+     },
+     "owner": {
+      "type": "string"
+     },
+     "visibility": {
+      "type": "string",
+      "enum": [
+       "private",
+       "team",
+       "app"
+      ]
+     },
+     "team_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "created_by": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "replayed": {
+      "type": "boolean"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "marking",
+     "content_type",
+     "state",
+     "owner",
+     "visibility",
+     "created_at"
+    ]
+   },
+   "BlobList": {
+    "type": "object",
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/BlobOut"
+      }
+     },
+     "next_cursor": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "items",
+     "next_cursor"
+    ]
+   },
+   "CollectionIn": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{1,62}$"
+     },
+     "marking": {
+      "type": "string"
+     },
+     "json_schema": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "indexed_fields": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "maxItems": 16
+     },
+     "unique_fields": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "encrypted": {
+      "type": "boolean"
+     },
+     "history_limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000
+     },
+     "deleted_retention_days": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3650
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "name",
+     "marking"
+    ]
+   },
+   "CollectionOut": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "marking": {
+      "type": "string"
+     },
+     "encrypted": {
+      "type": "boolean"
+     },
+     "indexed_fields": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "json_schema": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "unique_fields": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "version": {
+      "type": "integer"
+     },
+     "pending_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "history_limit": {
+      "type": "integer"
+     },
+     "deleted_retention_days": {
+      "type": "integer"
+     },
+     "created_by": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "name",
+     "marking",
+     "encrypted",
+     "indexed_fields",
+     "unique_fields",
+     "json_schema",
+     "version",
+     "pending_version"
+    ]
+   },
+   "ContractIn": {
+    "type": "object",
+    "properties": {
+     "json_schema": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "indexed_fields": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "unique_fields": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "defaults": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "expected_version": {
+      "type": "integer",
+      "minimum": 1
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "json_schema",
+     "expected_version"
+    ]
+   },
+   "Migration": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "collection": {
+      "type": "string"
+     },
+     "from_version": {
+      "type": "integer"
+     },
+     "to_version": {
+      "type": "integer"
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "running",
+       "succeeded",
+       "failed",
+       "cancelled"
+      ]
+     },
+     "processed": {
+      "type": "integer"
+     },
+     "rewritten": {
+      "type": "integer"
+     },
+     "failures": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "record_id": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "record_id",
+        "reason"
+       ]
+      }
+     },
+     "created_by": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "finished_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "collection",
+     "from_version",
+     "to_version",
+     "state",
+     "processed",
+     "rewritten",
+     "failures"
+    ]
+   },
+   "ContractChange": {
+    "type": "object",
+    "properties": {
+     "collection": {
+      "$ref": "#/components/schemas/CollectionOut"
+     },
+     "version": {
+      "type": "integer"
+     },
+     "immediate": {
+      "type": "boolean"
+     },
+     "reason": {
+      "type": "string"
+     },
+     "migration": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/Migration"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "collection",
+     "version",
+     "immediate",
+     "migration"
+    ]
+   },
+   "ContractVersions": {
+    "type": "object",
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "version": {
+         "type": "integer"
+        },
+        "json_schema": {
+         "type": "object",
+         "additionalProperties": true
+        },
+        "indexed_fields": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "unique_fields": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "created_by": {
+         "type": "string"
+        },
+        "created_at": {
+         "type": "string",
+         "format": "date-time"
+        },
+        "current": {
+         "type": "boolean"
+        },
+        "pending": {
+         "type": "boolean"
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "version",
+        "json_schema",
+        "indexed_fields",
+        "unique_fields",
+        "current",
+        "pending"
+       ]
+      }
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "items"
+    ]
+   },
+   "CollectionList": {
+    "type": "object",
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/CollectionOut"
+      }
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "items"
+    ]
+   },
+   "RecordIn": {
+    "type": "object",
+    "properties": {
+     "data": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "marking": {
+      "type": "string"
+     },
+     "visibility": {
+      "type": "string",
+      "enum": [
+       "private",
+       "team",
+       "app"
+      ]
+     },
+     "team_id": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "data"
+    ]
+   },
+   "RecordOut": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "collection": {
+      "type": "string"
+     },
+     "marking": {
+      "type": "string"
+     },
+     "version": {
+      "type": "integer"
+     },
+     "data": {
+      "anyOf": [
+       {
+        "type": "object",
+        "additionalProperties": true
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "content_withheld": {
+      "type": "boolean"
+     },
+     "withheld_reason": {
+      "type": "string"
+     },
+     "owner": {
+      "type": "string"
+     },
+     "visibility": {
+      "type": "string",
+      "enum": [
+       "private",
+       "team",
+       "app"
+      ]
+     },
+     "team_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "deleted": {
+      "type": "boolean"
+     },
+     "schema_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "replayed": {
+      "type": "boolean"
+     },
+     "created_by": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "updated_by": {
+      "type": "string"
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "collection",
+     "marking",
+     "version",
+     "data",
+     "content_withheld",
+     "owner",
+     "visibility",
+     "deleted"
+    ]
+   },
+   "QueryIn": {
+    "type": "object",
+    "properties": {
+     "filters": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+     },
+     "cursor": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false
+   },
+   "QueryOut": {
+    "type": "object",
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/RecordOut"
+      }
+     },
+     "next_cursor": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "marking": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "items",
+     "next_cursor",
+     "marking"
+    ]
+   },
+   "Revision": {
+    "type": "object",
+    "properties": {
+     "version": {
+      "type": "integer"
+     },
+     "op": {
+      "type": "string",
+      "enum": [
+       "create",
+       "update",
+       "delete",
+       "restore",
+       "migrate"
+      ]
+     },
+     "marking": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "concealed": {
+      "type": "boolean"
+     },
+     "size_bytes": {
+      "type": "integer"
+     },
+     "subject": {
+      "type": "string"
+     },
+     "actor": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "version",
+     "op",
+     "marking",
+     "created_at"
+    ]
+   },
+   "HistoryOut": {
+    "type": "object",
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Revision"
+      }
+     },
+     "next_before": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "items",
+     "next_before"
+    ]
+   },
+   "RestoreIn": {
+    "type": "object",
+    "properties": {
+     "version": {
+      "type": "integer",
+      "minimum": 1
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "version"
+    ]
+   }
+  }
+ }
 }
