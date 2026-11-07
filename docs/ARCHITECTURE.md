@@ -257,6 +257,23 @@ so undo never rewrites history. The restored marking is `Combine(current, old)`,
 lower a classification. Deleted records keep no content in the live row; their revisions remain
 until history expiry (`collections.history_limit`, default 100) or a purge.
 
+## Collection contracts
+
+A collection's contract (JSON Schema, indexed fields, unique fields) is versioned in
+`collection_versions`. `PUT …/collections/{name}/contract` (compare-and-swap on the version) applies a
+change at once when a conservative checker proves every record valid before is valid after (wider
+types, removed `required`, looser bounds, added enum values, properties added under
+`additionalProperties: false`) and no index, uniqueness or default is added. Anything else is staged
+as `pending_version` and the worker runs a migration job in batches of 200 with a committed cursor:
+apply declared defaults (a new version, op `migrate`, in history), validate, backfill index and
+uniqueness tokens. The collection switches only if every live record passes; otherwise the job fails
+with record IDs and reasons. Writers hold the collection's contract lock shared and staging and
+switching hold it exclusively, so every write after a change is staged satisfies both contracts.
+
+Unique fields are enforced on blind-index tokens. A unique violation is visible to any writer
+regardless of RLS (that is what uniqueness means), so the error never names the record holding the
+value; use uniqueness only for identifiers whose existence is not itself sensitive.
+
 ## Audit
 
 Audit events are appended in the transaction that makes the change, to a per-app hash chain
