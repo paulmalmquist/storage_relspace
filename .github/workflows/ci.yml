@@ -48,6 +48,39 @@ jobs:
             echo "Python files or manifests found"; exit 1
           fi
 
+  typescript:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: strongbox
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-retries 30
+    defaults:
+      run:
+        working-directory: clients/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - name: Types match internal/api/openapi.json
+        run: npm run check-generated
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Unit and contract tests against a live server (restricted login, real Postgres)
+        run: |
+          PG_ADMIN_URL=postgres://postgres:strongbox@localhost:5432/postgres?sslmode=disable scripts/live-server.sh > .live.env
+          . ./.live.env
+          npm test
+          npm run example
+
   terraform:
     runs-on: ubuntu-latest
     defaults:
