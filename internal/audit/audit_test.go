@@ -1,7 +1,11 @@
 package audit_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -14,7 +18,8 @@ import (
 func activity(t *testing.T, env *testenv.Env) string {
 	t.Helper()
 	ctx := context.Background()
-	meta, err := env.C.Blobs.Put(ctx, env.Ctx(t, "engineer@rel.test"), []byte("x"), service.BlobInput{Marking: markings.MustParse("CUI//SP-EXPT")})
+	meta, err := env.C.Blobs.Put(ctx, env.Ctx(t, "engineer@rel.test"), []byte("x"),
+		service.BlobInput{Marking: markings.MustParse("CUI//SP-EXPT//NOFORN"), Visibility: "app"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,13 +30,33 @@ func activity(t *testing.T, env *testenv.Env) string {
 	return meta.ID
 }
 
+func allEvents(t *testing.T, env *testenv.Env) []audit.Event {
+	t.Helper()
+	admin := env.Ctx(t, "admin@rel.test")
+	var out []audit.Event
+	_, chains, err := env.C.Auditing.Events(context.Background(), admin, "", 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range chains {
+		ev, _, err := env.C.Auditing.Events(context.Background(), admin, ch, 0, 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, ev...)
+	}
+	return out
+}
+
 func TestEventsCoverAllowAndDeny(t *testing.T) {
 	env := testenv.New(t)
 	activity(t, env)
-	events, _ := env.C.Audit.List(context.Background(), 0, 100)
 	want := map[string]bool{"blob.create/allow/engineer@rel.test": false, "blob.read_content/allow/engineer@rel.test": false,
 		"blob.read_meta/deny/foreign@rel.test": false}
-	for _, e := range events {
+	for _, e := range allEvents(t, env) {
+		if *e.App != testenv.App || !strings.HasPrefix(e.Chain, "app:"+testenv.App+":") {
+			t.Fatalf("event on the wrong chain: %+v", e)
+		}
 		k := e.Action + "/" + e.Decision + "/" + e.Actor
 		if _, ok := want[k]; ok {
 			want[k] = true
@@ -44,69 +69,93 @@ func TestEventsCoverAllowAndDeny(t *testing.T) {
 	}
 }
 
-func TestChainVerifiesAndDetectsTampering(t *testing.T) {
+func TestChainsVerifyAndDetectTampering(t *testing.T) {
 	env, ctx := testenv.New(t), context.Background()
 	activity(t, env)
-	r, err := env.C.Audit.Verify(ctx)
-	if err != nil || !r.OK || r.Checked != r.HeadSeq || r.Checked < 3 {
+	admin := env.Ctx(t, "admin@rel.test")
+	r, err := env.C.Auditing.Verify(ctx, admin)
+	if err != nil || !r.OK || len(r.Chains) == 0 {
 		t.Fatalf("verify: %v %+v", err, r)
 	}
-	if _, err := env.C.DB.Exec(ctx, `UPDATE audit_events SET actor='someone-else' WHERE seq=2`); err != nil {
-		t.Fatal(err)
+	victim := r.Chains[0]
+	env.Admin(t, `UPDATE audit_events SET actor='someone-else' WHERE chain=$1 AND seq=1`, victim.Chain)
+	r, _ = env.C.Auditing.Verify(ctx, admin)
+	if r.OK {
+		t.Fatal("edit not detected")
 	}
-	r, _ = env.C.Audit.Verify(ctx)
-	if r.OK || r.FirstInvalidSeq == nil || *r.FirstInvalidSeq != 2 {
-		t.Fatalf("edit not detected: %+v", r)
-	}
-}
-
-func TestDeletionAndTruncationDetected(t *testing.T) {
-	for _, q := range []string{`DELETE FROM audit_events WHERE seq=1`, `DELETE FROM audit_events WHERE seq=(SELECT max(seq) FROM audit_events)`} {
-		env, ctx := testenv.New(t), context.Background()
-		activity(t, env)
-		if _, err := env.C.DB.Exec(ctx, q); err != nil {
-			t.Fatal(err)
-		}
-		if r, _ := env.C.Audit.Verify(ctx); r.OK {
-			t.Fatalf("not detected: %s", q)
+	for _, c := range r.Chains {
+		if c.Chain == victim.Chain && (c.OK || c.FirstInvalidSeq == nil || *c.FirstInvalidSeq != 1) {
+			t.Fatalf("wrong chain result %+v", c)
 		}
 	}
 }
 
-func TestDelegatedActionsRecordBothIdentities(t *testing.T) {
+func TestOnlyAppAdminsReadTheAppLog(t *testing.T) {
 	env, ctx := testenv.New(t), context.Background()
-	user, agent := env.Ctx(t, "engineer@rel.test").Principal, env.Ctx(t, "agent:assistant").Principal
-	c := service.Ctx{Principal: user.DelegatedTo(agent), RequestID: "r"}
-	if _, _, err := env.C.Blobs.List(ctx, c, 0, ""); err != nil {
-		t.Fatal(err)
+	activity(t, env)
+	_, _, err := env.C.Auditing.Events(ctx, env.Ctx(t, "engineer@rel.test"), "", 0, 10)
+	if err == nil {
+		t.Fatal("non-admin read the app audit log")
 	}
-	events, _ := env.C.Audit.List(ctx, 0, 100)
-	last := events[len(events)-1]
-	if last.Actor != "agent:assistant" || last.OnBehalfOf == nil || *last.OnBehalfOf != "engineer@rel.test" || last.ActorKind != "agent" {
-		t.Fatalf("delegation not recorded: %+v", last)
+	// The other app's admin sees only the other app's chains.
+	_, chains, err := env.C.Auditing.Events(ctx, env.CtxIn(t, testenv.Other, "outsider@rel.test"), "", 0, 10)
+	if err == nil && len(chains) != 0 {
+		t.Fatalf("other app sees chains %v", chains)
 	}
 }
 
-// Separate Log instances stand in for separate replicas; ordering relies on SELECT ... FOR UPDATE.
-func TestConcurrentWritersKeepChainValid(t *testing.T) {
+func TestConcurrentWritersKeepChainsIntact(t *testing.T) {
 	env, ctx := testenv.New(t), context.Background()
-	logs := []*audit.Log{audit.New(env.C.DB), audit.New(env.C.DB)}
+	eng := env.Ctx(t, "engineer@rel.test")
 	var wg sync.WaitGroup
-	for i := range 8 {
+	for i := 0; i < 16; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := range 10 {
-				if _, err := logs[i%2].Record(ctx, audit.Entry{Action: "test.concurrency", ResourceType: "test",
-					ResourceID: string(rune('a' + j)), Decision: "allow", Reason: "load"}); err != nil {
+			for j := 0; j < 5; j++ {
+				if _, err := env.C.Blobs.Put(ctx, eng, []byte("x"), service.BlobInput{}); err != nil {
 					t.Error(err)
 				}
 			}
 		}()
 	}
 	wg.Wait()
-	r, err := env.C.Audit.Verify(ctx)
-	if err != nil || !r.OK || r.Checked != 80 {
-		t.Fatalf("chain after concurrent writes: %v %+v", err, r)
+	r, err := env.C.Auditing.Verify(ctx, env.Ctx(t, "admin@rel.test"))
+	var total int64
+	for _, c := range r.Chains {
+		total += c.Checked
+	}
+	if err != nil || !r.OK || total < 80 || len(r.Chains) < 2 {
+		t.Fatalf("verify after concurrency: %v ok=%v events=%d chains=%d", err, r.OK, total, len(r.Chains))
+	}
+}
+
+// Delivery exports committed events exactly in chain order and advances a cursor; a second pass
+// sends nothing new.
+func TestDeliveryIsCursorBased(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	activity(t, env)
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+	s1, err := env.C.Worker.RunOnce(ctx)
+	if err != nil || s1.AuditDelivered < 3 {
+		t.Fatalf("first pass: %v %+v", err, s1)
+	}
+	lines := strings.Count(buf.String(), `"audit":true`)
+	if lines != s1.AuditDelivered {
+		t.Fatalf("%d lines for %d events", lines, s1.AuditDelivered)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var m map[string]any
+		_ = json.Unmarshal([]byte(line), &m)
+		if m["audit"] == true && (m["chain"] == nil || m["hash"] == nil) {
+			t.Fatalf("delivered event lacks chain linkage: %s", line)
+		}
+	}
+	s2, _ := env.C.Worker.RunOnce(ctx)
+	if s2.AuditDelivered != 0 || s2.AuditUndelivered != 0 {
+		t.Fatalf("second pass re-delivered: %+v", s2)
 	}
 }

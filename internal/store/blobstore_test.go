@@ -186,7 +186,7 @@ func TestMigrateRefusesPythonEraDatabase(t *testing.T) {
 		t.Skip("needs STRONGBOX_TEST_DATABASE_URL")
 	}
 	ctx := context.Background()
-	admin, err := Open(ctx, url, "")
+	admin, err := Open(ctx, url, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestMigrateRefusesPythonEraDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE") //nolint:errcheck
-	pool, err := Open(ctx, url, schema)
+	pool, err := Open(ctx, url, Options{Schema: schema})
 	if err != nil {
 		t.Fatal(err)
 	}

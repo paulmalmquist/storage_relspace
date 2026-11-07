@@ -1,15 +1,17 @@
-// Command strongbox runs the CUI-grade blob and structured data store.
+// Command strongbox runs Strongbox, the shared persistence service for Dreamcatcher apps.
 //
-//	strongbox init            create schema (and a dev keyring when using local KMS)
-//	strongbox serve           run the REST API
-//	strongbox mcp             run the MCP server (stdio or streamable HTTP)
-//	strongbox principal ...   register or list principals
-//	strongbox token SUBJECT   mint a development token
-//	strongbox audit-verify    verify the audit hash chain
-//	strongbox gc              remove abandoned uploads
-//	strongbox fips-check      report FIPS 140-3 module status
-//	strongbox keyring ...     manage the local development keyring
-//	strongbox openapi         print the OpenAPI document
+//	strongbox init              migrate the schema (privileged login); dev: create a keyring
+//	strongbox db ...            bootstrap roles, check the runtime login, show migration status
+//	strongbox serve             run the REST API (and the background worker unless -worker=false)
+//	strongbox worker            run the background worker alone (or -once)
+//	strongbox mcp               run the MCP server (stdio or streamable HTTP)
+//	strongbox admin ...         privileged operations: apps, clients, members, legacy data, owners
+//	strongbox principal ...     register or list principals
+//	strongbox token SUBJECT     mint a development token
+//	strongbox audit-verify      verify every audit hash chain
+//	strongbox fips-check        report FIPS 140-3 module status
+//	strongbox keyring ...       manage the local development keyring
+//	strongbox openapi           print the OpenAPI document
 package main
 
 import (
@@ -26,8 +28,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/paulmalmquist/storage_relspace/internal/admin"
 	"github.com/paulmalmquist/storage_relspace/internal/api"
 	"github.com/paulmalmquist/storage_relspace/internal/audit"
 	"github.com/paulmalmquist/storage_relspace/internal/auth"
@@ -39,27 +44,32 @@ import (
 	"github.com/paulmalmquist/storage_relspace/pkg/client"
 )
 
-var version = "0.2.0"
+var version = "0.3.0"
 
 type stringList []string
 
 func (s *stringList) String() string     { return strings.Join(*s, ",") }
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
+var commands = map[string]func(context.Context, []string) error{}
+
 func main() {
+	for k, v := range map[string]func(context.Context, []string) error{
+		"init": cmdInit, "db": cmdDB, "serve": cmdServe, "worker": cmdWorker, "mcp": cmdMCP, "admin": cmdAdmin,
+		"principal": cmdPrincipal, "token": cmdToken, "audit-verify": cmdAuditVerify, "fips-check": cmdFIPS,
+		"keyring": cmdKeyring, "gc": cmdGC,
+		"openapi": func(context.Context, []string) error { _, err := os.Stdout.Write(api.OpenAPI); return err },
+		"version": func(context.Context, []string) error { fmt.Println(version); return nil },
+	} {
+		commands[k] = v
+	}
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	cmds := map[string]func(context.Context, []string) error{
-		"init": cmdInit, "serve": cmdServe, "mcp": cmdMCP, "principal": cmdPrincipal, "token": cmdToken,
-		"audit-verify": cmdAuditVerify, "gc": cmdGC, "fips-check": cmdFIPS, "keyring": cmdKeyring,
-		"openapi": func(context.Context, []string) error { _, err := os.Stdout.Write(api.OpenAPI); return err },
-		"version": func(context.Context, []string) error { fmt.Println(version); return nil },
-	}
-	fn, ok := cmds[os.Args[1]]
+	fn, ok := commands[os.Args[1]]
 	if !ok {
 		usage()
 		os.Exit(2)
@@ -79,7 +89,11 @@ type exitCode int
 func (e exitCode) Error() string { return fmt.Sprintf("exit %d", int(e)) }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: strongbox {init|serve|mcp|principal|token|audit-verify|gc|fips-check|keyring|openapi|version} [flags]")
+	names := make([]string, 0, len(commands))
+	for k := range commands {
+		names = append(names, k)
+	}
+	fmt.Fprintf(os.Stderr, "usage: strongbox {%s} [flags]\n", strings.Join(names, "|"))
 }
 
 func setupLogging(level string) {
@@ -109,16 +123,34 @@ func load() (*config.Config, error) {
 	return cfg, nil
 }
 
-func openDB(ctx context.Context, cfg *config.Config) (*service.Container, error) {
-	return service.Build(ctx, cfg, service.Overrides{})
+// privileged opens the migration login (member of strongbox_owner).
+func privileged(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
+	return store.Open(ctx, cfg.MigrationDatabaseURL, store.Options{Schema: cfg.DBSchema, MaxConns: 4, AppName: "strongbox-admin"})
 }
 
-// ---- init -----------------------------------------------------------------------------------------
+func waitFor(ctx context.Context, pool *pgxpool.Pool, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
+	for {
+		err := pool.Ping(ctx)
+		if err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("database not reachable: %w", err)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// ---- init / db ------------------------------------------------------------------------------------
 
 func cmdInit(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	wait := fs.Duration("wait", 60*time.Second, "how long to wait for the database to accept connections")
 	shutdownURL := fs.String("shutdown-url", "", "POST here when done (e.g. Cloud SQL proxy /quitquitquit)")
+	bootstrap := fs.Bool("bootstrap-roles", false, "create roles and schema first (needs CREATEROLE)")
+	var logins stringList
+	fs.Var(&logins, "runtime-login", "with -bootstrap-roles: login role to grant strongbox_runtime (repeatable)")
 	_ = fs.Parse(args)
 	if *shutdownURL != "" {
 		defer shutdownSidecar(*shutdownURL)
@@ -140,27 +172,91 @@ func cmdInit(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	pool, err := store.Open(ctx, cfg.DatabaseURL, "")
+	if *bootstrap {
+		pool, err := store.Open(ctx, cfg.MigrationDatabaseURL, store.Options{})
+		if err != nil {
+			return err
+		}
+		err = waitFor(ctx, pool, *wait)
+		if err == nil {
+			err = store.Bootstrap(ctx, pool, store.BootstrapOptions{Schema: cfg.DBSchema, RuntimeLogins: logins})
+		}
+		pool.Close()
+		if err != nil {
+			return err
+		}
+	}
+	pool, err := privileged(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
-	deadline := time.Now().Add(*wait)
-	for {
-		err := pool.Ping(ctx)
-		if err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("database not reachable: %w", err)
-		}
-		time.Sleep(2 * time.Second)
+	if err := waitFor(ctx, pool, *wait); err != nil {
+		return err
 	}
 	if err := store.Migrate(ctx, pool); err != nil {
 		return err
 	}
 	fmt.Println("schema ready")
 	return nil
+}
+
+func cmdDB(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: strongbox db bootstrap [-runtime-login L]... | check-roles | status")
+	}
+	cfg, err := load()
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "bootstrap":
+		fs := flag.NewFlagSet("db bootstrap", flag.ExitOnError)
+		var logins stringList
+		fs.Var(&logins, "runtime-login", "login role to grant strongbox_runtime (repeatable)")
+		_ = fs.Parse(args[1:])
+		pool, err := store.Open(ctx, cfg.MigrationDatabaseURL, store.Options{})
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		if err := store.Bootstrap(ctx, pool, store.BootstrapOptions{Schema: cfg.DBSchema, RuntimeLogins: logins}); err != nil {
+			return err
+		}
+		fmt.Printf("roles %s and %s ready; schema %s\n", store.OwnerRole, store.RuntimeRole, cfg.DBSchema)
+		return nil
+	case "check-roles":
+		pool, err := store.Open(ctx, cfg.DatabaseURL, store.Options{Schema: cfg.DBSchema})
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		rep, err := store.CheckRuntime(ctx, pool)
+		if err != nil {
+			return err
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(rep)
+		if !rep.OK() {
+			return exitCode(1)
+		}
+		return nil
+	case "status":
+		pool, err := privileged(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		applied, embedded, err := store.MigrationVersion(ctx, pool)
+		if err != nil {
+			return err
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]int{"applied": applied, "embedded": embedded})
+		if applied != embedded {
+			return exitCode(1)
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown db command %q", args[0])
 }
 
 func shutdownSidecar(url string) {
@@ -173,7 +269,7 @@ func shutdownSidecar(url string) {
 	_ = resp.Body.Close()
 }
 
-// ---- serve ----------------------------------------------------------------------------------------
+// ---- serve / worker -------------------------------------------------------------------------------
 
 func listen(ctx context.Context, addr string, h http.Handler) error {
 	srv := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
@@ -197,21 +293,82 @@ func defaultAddr() string {
 	return ":8080"
 }
 
+// runtimeContainer builds the container on the runtime login after checking that the login is
+// restricted and the schema is fully migrated. Migrations never run here.
+func runtimeContainer(ctx context.Context, cfg *config.Config) (*service.Container, error) {
+	c, err := service.Build(ctx, cfg, service.Overrides{})
+	if err != nil {
+		return nil, err
+	}
+	fail := func(err error) (*service.Container, error) { c.Pool.Close(); return nil, err }
+	rep, err := store.CheckRuntime(ctx, c.Pool)
+	if err != nil {
+		return fail(err)
+	}
+	if !rep.OK() {
+		if !cfg.AllowPrivilegedDBRole {
+			return fail(fmt.Errorf("refusing to serve with database login %s (create a restricted login with `strongbox db bootstrap -runtime-login`)", rep))
+		}
+		slog.Warn("database login is not restricted (development override)", "report", rep.String())
+	}
+	applied, embedded, err := store.MigrationVersion(ctx, c.Pool)
+	if err != nil {
+		return fail(fmt.Errorf("read schema version: %w", err))
+	}
+	if applied != embedded {
+		return fail(fmt.Errorf("schema is at migration %d, this build needs %d: run `strongbox init`", applied, embedded))
+	}
+	return c, nil
+}
+
 func cmdServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr(), "listen address")
+	worker := fs.Bool("worker", true, "also run the background worker in this process")
 	_ = fs.Parse(args)
 	cfg, err := load()
 	if err != nil {
 		return err
 	}
-	c, err := openDB(ctx, cfg)
+	c, err := runtimeContainer(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	defer c.DB.Close()
-	slog.Info("strongbox api", "version", version, "kms", c.KMS.Describe(), "blobs", c.Backend.Describe(), "fips", crypto.FIPSStatus())
+	defer c.Pool.Close()
+	if *worker {
+		go c.Worker.Run(ctx)
+	}
+	slog.Info("strongbox api", "version", version, "app_env", cfg.AppEnv, "kms", c.KMS.Describe(), "blobs", c.Backend.Describe(),
+		"fips", crypto.FIPSStatus())
 	return listen(ctx, *addr, api.New(c))
+}
+
+func cmdWorker(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("worker", flag.ExitOnError)
+	once := fs.Bool("once", false, "run one pass and exit")
+	_ = fs.Parse(args)
+	cfg, err := load()
+	if err != nil {
+		return err
+	}
+	c, err := runtimeContainer(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer c.Pool.Close()
+	if *once {
+		stats, err := c.Worker.RunOnce(ctx)
+		_ = json.NewEncoder(os.Stdout).Encode(stats)
+		return err
+	}
+	c.Worker.Run(ctx)
+	return nil
+}
+
+// cmdGC is the old name for one worker pass. Deprecated: use `strongbox worker -once`.
+func cmdGC(ctx context.Context, _ []string) error {
+	fmt.Fprintln(os.Stderr, "strongbox gc is deprecated; use `strongbox worker -once`")
+	return cmdWorker(ctx, []string{"-once"})
 }
 
 // ---- mcp ------------------------------------------------------------------------------------------
@@ -250,10 +407,11 @@ func cmdMCP(ctx context.Context, args []string) error {
 			return fmt.Errorf("STRONGBOX_MCP_MAX_READ_BYTES: %w", err)
 		}
 	}
+	opts := mcpserver.Options{MaxReadBytes: maxRead, DefaultApp: os.Getenv("STRONGBOX_MCP_APP")}
 	switch *transport {
 	case "stdio":
-		srv := mcpserver.New(cl, mcpserver.Options{DefaultOnBehalfOf: os.Getenv("STRONGBOX_MCP_ON_BEHALF_OF"), MaxReadBytes: maxRead})
-		return srv.Run(ctx, &mcp.StdioTransport{})
+		opts.DefaultOnBehalfOf = os.Getenv("STRONGBOX_MCP_ON_BEHALF_OF")
+		return mcpserver.New(cl, opts).Run(ctx, &mcp.StdioTransport{})
 	case "streamable-http":
 		cfg, err := load()
 		if err != nil {
@@ -278,14 +436,113 @@ func cmdMCP(ctx context.Context, args []string) error {
 			}
 			return vt.Subject, vt.ExpiresAt, nil
 		}
-		srv := mcpserver.New(cl, mcpserver.Options{MaxReadBytes: maxRead})
-		return listen(ctx, *addr, mcpserver.HTTPHandler(srv, verify, publicURL, issuer))
+		return listen(ctx, *addr, mcpserver.HTTPHandler(mcpserver.New(cl, opts), verify, publicURL, issuer))
 	default:
 		return fmt.Errorf("unknown transport %q", *transport)
 	}
 }
 
 // ---- admin ----------------------------------------------------------------------------------------
+
+const adminUsage = `usage:
+  strongbox admin app create APP -admin SUBJECT [-name NAME]     APP is <app_id>:<env>, e.g. notes:prod
+  strongbox admin app status APP active|suspended
+  strongbox admin client add|remove APP SUBJECT                  workloads that may act for members
+  strongbox admin member set APP SUBJECT ROLE                    recovery: viewer|member|editor|admin
+  strongbox admin legacy-assign -app APP [-dry-run] [-verify]    move pre-app-scoping rows into APP
+  strongbox admin transfer-owner -app APP -kind record|blob -id ID -to SUBJECT`
+
+func cmdAdmin(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return errors.New(adminUsage)
+	}
+	cfg, err := load()
+	if err != nil {
+		return err
+	}
+	pool, err := privileged(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	actor := "admin-cli:" + firstNonEmpty(os.Getenv("STRONGBOX_ADMIN_ACTOR"), os.Getenv("USER"), "unknown")
+	a := &admin.Admin{Pool: pool, Actor: actor, Stripes: cfg.AuditStripes}
+	need := func(n int) error {
+		if len(args) < n {
+			return errors.New(adminUsage)
+		}
+		return nil
+	}
+	switch args[0] {
+	case "app":
+		if err := need(3); err != nil {
+			return err
+		}
+		switch args[1] {
+		case "create":
+			fs := flag.NewFlagSet("admin app create", flag.ExitOnError)
+			first := fs.String("admin", "", "first admin (a registered principal)")
+			name := fs.String("name", "", "display name")
+			_ = fs.Parse(args[3:])
+			if *first == "" {
+				return errors.New("-admin is required")
+			}
+			return a.CreateApp(ctx, args[2], *name, *first)
+		case "status":
+			if err := need(4); err != nil {
+				return err
+			}
+			return a.SetAppStatus(ctx, args[2], args[3])
+		}
+	case "client":
+		if err := need(4); err != nil {
+			return err
+		}
+		if args[1] == "add" {
+			return a.AddClient(ctx, args[2], args[3])
+		}
+		if args[1] == "remove" {
+			return a.RemoveClient(ctx, args[2], args[3])
+		}
+	case "member":
+		if len(args) < 5 || args[1] != "set" {
+			return errors.New(adminUsage)
+		}
+		return a.SetMember(ctx, args[2], args[3], args[4])
+	case "legacy-assign":
+		fs := flag.NewFlagSet("admin legacy-assign", flag.ExitOnError)
+		app := fs.String("app", "", "target app <app_id>:<env>")
+		dry := fs.Bool("dry-run", false, "count and verify only")
+		verify := fs.Bool("verify", true, "decrypt every legacy object under its original context before moving")
+		_ = fs.Parse(args[1:])
+		kp, err := service.BuildKMS(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		a.KMS = kp
+		rep, err := a.AssignLegacy(ctx, service.NewKeys(kp, cfg.DataKeyRotation, cfg.DataKeyCacheTTL, 1024), *app, *dry, *verify)
+		_ = json.NewEncoder(os.Stdout).Encode(rep)
+		return err
+	case "transfer-owner":
+		fs := flag.NewFlagSet("admin transfer-owner", flag.ExitOnError)
+		app := fs.String("app", "", "app <app_id>:<env>")
+		kind := fs.String("kind", "record", "record or blob")
+		id := fs.String("id", "", "resource id")
+		to := fs.String("to", "", "new owner (an app member)")
+		_ = fs.Parse(args[1:])
+		return a.TransferOwner(ctx, *app, *kind, *id, *to)
+	}
+	return errors.New(adminUsage)
+}
+
+func firstNonEmpty(v ...string) string {
+	for _, s := range v {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
+}
 
 func cmdPrincipal(ctx context.Context, args []string) error {
 	if len(args) == 0 || (args[0] != "put" && args[0] != "list") {
@@ -295,7 +552,7 @@ func cmdPrincipal(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	pool, err := store.Open(ctx, cfg.DatabaseURL, "")
+	pool, err := privileged(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -354,45 +611,49 @@ func cmdToken(_ context.Context, args []string) error {
 	return nil
 }
 
-func cmdAuditVerify(ctx context.Context, _ []string) error {
-	cfg, err := load()
-	if err != nil {
-		return err
-	}
-	pool, err := store.Open(ctx, cfg.DatabaseURL, "")
-	if err != nil {
-		return err
-	}
-	defer pool.Close()
-	r, err := audit.New(pool).Verify(ctx)
-	if err != nil {
-		return err
-	}
-	_ = json.NewEncoder(os.Stdout).Encode(r)
-	if !r.OK {
-		return exitCode(1)
-	}
-	return nil
-}
-
-func cmdGC(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("gc", flag.ExitOnError)
-	older := fs.Duration("older-than", time.Hour, "age of pending uploads to remove")
+// cmdAuditVerify checks every chain (or one app's chains) as the privileged login.
+func cmdAuditVerify(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("audit-verify", flag.ExitOnError)
+	app := fs.String("app", "", "only this app's chains (<app_id>:<env>)")
 	_ = fs.Parse(args)
 	cfg, err := load()
 	if err != nil {
 		return err
 	}
-	c, err := openDB(ctx, cfg)
+	pool, err := privileged(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	defer c.DB.Close()
-	n, err := c.Blobs.SweepPending(ctx, *older)
+	defer pool.Close()
+	out := audit.VerifyResult{OK: true, Chains: []audit.ChainResult{}}
+	err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SET LOCAL ROLE `+store.OwnerRole); err != nil {
+			return err
+		}
+		chains, err := audit.Chains(ctx, tx)
+		if err != nil {
+			return err
+		}
+		for _, ch := range chains {
+			if *app != "" && !strings.HasPrefix(ch, "app:"+*app+":") {
+				continue
+			}
+			r, err := audit.VerifyChain(ctx, tx, ch)
+			if err != nil {
+				return err
+			}
+			out.OK = out.OK && r.OK
+			out.Chains = append(out.Chains, r)
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("removed %d abandoned uploads\n", n)
+	_ = json.NewEncoder(os.Stdout).Encode(out)
+	if !out.OK {
+		return exitCode(1)
+	}
 	return nil
 }
 

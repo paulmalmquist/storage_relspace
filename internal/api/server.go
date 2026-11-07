@@ -64,37 +64,84 @@ func (s *Server) routes() {
 			_, _ = w.Write(OpenAPI)
 		})
 	}
-	m.HandleFunc("GET /v1/whoami", s.authed(s.whoami))
-	m.HandleFunc("GET /v1/principals", s.authed(s.listPrincipals))
-	m.HandleFunc("PUT /v1/principals/{subject}", s.authed(s.putPrincipal))
-	m.HandleFunc("GET /v1/audit/events", s.authed(s.auditEvents))
-	m.HandleFunc("GET /v1/audit/verify", s.authed(s.auditVerify))
+	for pattern, h := range s.table() {
+		m.HandleFunc(pattern, s.authed(h))
+	}
+}
 
-	m.HandleFunc("POST /v1/blobs", s.authed(s.uploadBlob))
-	m.HandleFunc("GET /v1/blobs", s.authed(s.listBlobs))
-	m.HandleFunc("GET /v1/blobs/{id}", s.authed(s.getBlob))
-	m.HandleFunc("GET /v1/blobs/{id}/content", s.authed(s.downloadBlob))
-	m.HandleFunc("DELETE /v1/blobs/{id}", s.authed(s.deleteBlob))
-
-	m.HandleFunc("POST /v1/collections", s.authed(s.createCollection))
-	m.HandleFunc("GET /v1/collections", s.authed(s.listCollections))
-	m.HandleFunc("GET /v1/collections/{name}", s.authed(s.getCollection))
-	m.HandleFunc("POST /v1/collections/{name}/records", s.authed(s.createRecord))
-	m.HandleFunc("GET /v1/collections/{name}/records/{id}", s.authed(s.getRecord))
-	m.HandleFunc("PUT /v1/collections/{name}/records/{id}", s.authed(s.updateRecord))
-	m.HandleFunc("DELETE /v1/collections/{name}/records/{id}", s.authed(s.deleteRecord))
-	m.HandleFunc("POST /v1/collections/{name}/query", s.authed(s.queryRecords))
+// table maps every authenticated route to its handler. App-scoped routes live under
+// /v1/apps/{app}: the path names the app, the deployment fixes the environment, and membership
+// (checked in the database) decides access.
+func (s *Server) table() map[string]handler {
+	const a = "/v1/apps/{app}"
+	const rec = a + "/collections/{name}/records/{id}"
+	return map[string]handler{
+		"GET /v1/whoami":                                  s.whoami,
+		"GET /v1/limits":                                  s.limits,
+		"GET /v1/principals":                              s.listPrincipals,
+		"PUT /v1/principals/{subject}":                    s.putPrincipal,
+		"GET /v1/audit/events":                            s.auditEvents,
+		"GET /v1/audit/verify":                            s.auditVerify,
+		"GET " + a:                                        s.app(s.getApp),
+		"GET " + a + "/members":                           s.app(s.listMembers),
+		"PUT " + a + "/members/{subject}":                 s.app(s.putMember),
+		"DELETE " + a + "/members/{subject}":              s.app(s.removeMember),
+		"GET " + a + "/teams":                             s.app(s.listTeams),
+		"POST " + a + "/teams":                            s.app(s.createTeam),
+		"PUT " + a + "/teams/{team}/members/{subject}":    s.app(s.putTeamMember),
+		"DELETE " + a + "/teams/{team}/members/{subject}": s.app(s.removeTeamMember),
+		"POST " + a + "/blobs":                            s.app(s.uploadBlob),
+		"GET " + a + "/blobs":                             s.app(s.listBlobs),
+		"GET " + a + "/blobs/{id}":                        s.app(s.getBlob),
+		"GET " + a + "/blobs/{id}/content":                s.app(s.downloadBlob),
+		"DELETE " + a + "/blobs/{id}":                     s.app(s.deleteBlob),
+		"PUT " + a + "/blobs/{id}/sharing":                s.app(s.setSharing("blob")),
+		"GET " + a + "/blobs/{id}/grants":                 s.app(s.listGrants("blob")),
+		"POST " + a + "/blobs/{id}/grants":                s.app(s.addGrant("blob")),
+		"DELETE " + a + "/blobs/{id}/grants/{grant}":      s.app(s.removeGrant("blob")),
+		"POST " + a + "/collections":                      s.app(s.createCollection),
+		"GET " + a + "/collections":                       s.app(s.listCollections),
+		"GET " + a + "/collections/{name}":                s.app(s.getCollection),
+		"POST " + a + "/collections/{name}/records":       s.app(s.createRecord),
+		"POST " + a + "/collections/{name}/query":         s.app(s.queryRecords),
+		"GET " + rec:                                      s.app(s.getRecord),
+		"PUT " + rec:                                      s.app(s.updateRecord),
+		"DELETE " + rec:                                   s.app(s.deleteRecord),
+		"GET " + rec + "/history":                         s.app(s.recordHistory),
+		"GET " + rec + "/history/{version}":               s.app(s.recordRevision),
+		"POST " + rec + "/restore":                        s.app(s.restoreRecord),
+		"PUT " + rec + "/sharing":                         s.app(s.setSharing("record")),
+		"GET " + rec + "/grants":                          s.app(s.listGrants("record")),
+		"POST " + rec + "/grants":                         s.app(s.addGrant("record")),
+		"DELETE " + rec + "/grants/{grant}":               s.app(s.removeGrant("record")),
+		"GET " + a + "/operations/{op_id}":                s.app(s.getOperation),
+		"POST " + a + "/explain":                          s.app(s.explain),
+		"GET " + a + "/audit/events":                      s.app(s.auditEvents),
+		"GET " + a + "/audit/verify":                      s.app(s.auditVerify),
+	}
 }
 
 // Routes lists the registered API patterns (used by the OpenAPI contract test).
 func Routes() []string {
-	return []string{
-		"GET /v1/whoami", "GET /v1/principals", "PUT /v1/principals/{subject}", "GET /v1/audit/events",
-		"GET /v1/audit/verify", "POST /v1/blobs", "GET /v1/blobs", "GET /v1/blobs/{id}", "GET /v1/blobs/{id}/content",
-		"DELETE /v1/blobs/{id}", "POST /v1/collections", "GET /v1/collections", "GET /v1/collections/{name}",
-		"POST /v1/collections/{name}/records", "GET /v1/collections/{name}/records/{id}",
-		"PUT /v1/collections/{name}/records/{id}", "DELETE /v1/collections/{name}/records/{id}",
-		"POST /v1/collections/{name}/query",
+	s := &Server{}
+	out := make([]string, 0, 64)
+	for k := range s.table() {
+		out = append(out, k)
+	}
+	return out
+}
+
+// app resolves the {app} path segment into the request's scope and passes the client operation ID
+// (Idempotency-Key) through.
+func (s *Server) app(h handler) handler {
+	return func(w http.ResponseWriter, r *http.Request, c service.Ctx) error {
+		app, err := s.c.AppScope(r.PathValue("app"))
+		if err != nil {
+			return err
+		}
+		c.App = app
+		c.OpID = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		return h(w, r, c)
 	}
 }
 
@@ -178,7 +225,7 @@ func (s *Server) authFailure(r *http.Request, reason, subject string) error {
 	if subject == "" {
 		subject = "anonymous"
 	}
-	if _, err := s.c.Audit.Record(r.Context(), audit.Entry{Anonymous: subject, Action: "auth.authenticate",
+	if err := s.c.Auditing.Record(r.Context(), audit.Entry{Anonymous: subject, Action: "auth.authenticate",
 		ResourceType: "session", Decision: "deny", Reason: reason, RequestID: requestID(r)}); err != nil {
 		return err
 	}
@@ -208,7 +255,7 @@ func (s *Server) authenticate(r *http.Request) (*auth.Principal, error) {
 		return p, nil
 	}
 	if !p.HasScope("delegate") {
-		if _, err := s.c.Audit.Record(ctx, audit.Entry{Principal: p, Action: "auth.delegate", ResourceType: "session",
+		if err := s.c.Auditing.Record(ctx, audit.Entry{Principal: p, Action: "auth.delegate", ResourceType: "session",
 			Decision: "deny", Reason: "caller lacks the delegate scope", RequestID: requestID(r)}); err != nil {
 			return nil, err
 		}
@@ -273,7 +320,9 @@ var titles = map[string]string{
 	"not_found": "NotFound", "conflict": "Conflict", "precondition_failed": "PreconditionFailed",
 	"payload_too_large": "PayloadTooLarge", "validation_failed": "ValidationFailed",
 	"precondition_required": "PreconditionRequired", "integrity_violation": "IntegrityViolation",
-	"configuration_error": "ConfigurationError",
+	"configuration_error": "ConfigurationError", "internal_error": "InternalError", "rate_limited": "TooManyRequests",
+	"unavailable": "ServiceUnavailable", "quota_exceeded": "QuotaExceeded", "idempotency_key_reused": "IdempotencyKeyReused",
+	"operation_in_progress": "OperationInProgress", "upload_expired": "UploadExpired",
 }
 
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
@@ -289,6 +338,10 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	if e.Status >= 500 {
 		slog.Error("request failed", "request_id", requestID(r), "code", e.Code, "detail", e.Detail)
+	}
+	switch e.Code {
+	case "rate_limited", "operation_in_progress", "unavailable":
+		w.Header().Set("Retry-After", "1")
 	}
 	problem(w, r, e.Status, e.Code, titles[e.Code], e.Detail)
 }

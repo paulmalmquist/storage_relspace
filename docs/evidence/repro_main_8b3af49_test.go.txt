@@ -1,0 +1,166 @@
+package service_test
+
+// Reproductions of the review findings against main@8b3af49. Each test asserts the CORRECT behavior,
+// so on the old code it fails; the failure output is recorded in docs/evidence/REPRODUCTIONS.md.
+
+import (
+	"context"
+	"os"
+	"sync"
+	"testing"
+
+	"github.com/paulmalmquist/storage_relspace/internal/markings"
+	"github.com/paulmalmquist/storage_relspace/internal/service"
+	"github.com/paulmalmquist/storage_relspace/internal/testenv"
+)
+
+// 1. A controlled record must never be stored in plaintext, even in an unencrypted collection.
+func TestRepro1ControlledRecordInUnencryptedCollection(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	admin := env.Ctx(t, "admin@rel.test")
+	no := false
+	if _, err := env.C.Records.CreateCollection(ctx, admin, service.CollectionInput{Name: "open", Marking: markings.MustParse(markings.Uncontrolled), Encrypted: &no}); err != nil {
+		t.Fatal(err)
+	}
+	m := markings.MustParse("CUI//SP-EXPT")
+	rec, err := env.C.Records.Create(ctx, admin, "open", doc(`{"secret":"engine drawing"}`), &m, "")
+	if err != nil {
+		return // rejected: correct
+	}
+	var plain *string
+	_ = env.C.DB.QueryRow(ctx, `SELECT data_plain::text FROM records WHERE id=$1`, rec.ID).Scan(&plain)
+	if plain != nil {
+		t.Fatalf("CUI//SP-EXPT record stored in plaintext: %s", *plain)
+	}
+}
+
+// 3. A delete with a stale expected version must not delete a newer version.
+func TestRepro3StaleDeleteRace(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	ncr(t, env)
+	eng := env.Ctx(t, "engineer@rel.test")
+	rec, _ := env.C.Records.Create(ctx, eng, "ncr", doc(`{"part_number":"A","status":"open"}`), nil, "")
+	// Simulate a concurrent writer committing between the version check and the delete.
+	if _, err := env.C.DB.Exec(ctx, `
+		CREATE FUNCTION bump() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN UPDATE records SET version = version + 1 WHERE id = OLD.record_id; RETURN OLD; END $$;
+		CREATE TRIGGER bump BEFORE DELETE ON record_index FOR EACH ROW EXECUTE FUNCTION bump();`); err != nil {
+		t.Fatal(err)
+	}
+	v := 1
+	err := env.C.Records.Delete(ctx, eng, "ncr", rec.ID, &v, false)
+	var deleted bool
+	_ = env.C.DB.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM records WHERE id=$1`, rec.ID).Scan(&deleted)
+	if err == nil && deleted {
+		t.Fatal("delete with expected version 1 removed the record after it moved past version 1")
+	}
+}
+
+// 4. A sweep that races an in-progress upload must not leave an orphaned object or a false audit event.
+func TestRepro4SweepVersusCommit(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	eng := env.Ctx(t, "engineer@rel.test")
+	up, _, err := env.C.Blobs.Begin(ctx, eng, service.BlobInput{Marking: expt, DeclaredSize: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = up.Write([]byte("in flight"))
+	if _, err := env.C.Blobs.SweepPending(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	_, commitErr := up.Commit()
+	_, statErr := os.Stat(env.ObjectPath(up.ID))
+	var stored int
+	_ = env.C.DB.QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE action='blob.create' AND resource_id=$1 AND reason='blob stored'`, up.ID).Scan(&stored)
+	t.Logf("commit error: %v; object exists: %v; 'blob stored' audit events: %d", commitErr, statErr == nil, stored)
+	if statErr == nil || stored > 0 {
+		t.Fatal("sweep/commit race left an orphaned object or recorded a store that did not happen")
+	}
+}
+
+// 5. Concurrent uploads with one idempotency key must produce one canonical blob.
+func TestRepro5DuplicateConcurrentUploads(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	eng := env.Ctx(t, "engineer@rel.test")
+	a, _, errA := env.C.Blobs.Begin(ctx, eng, service.BlobInput{Marking: expt, DeclaredSize: -1, IdempotencyKey: "same"})
+	b, _, errB := env.C.Blobs.Begin(ctx, eng, service.BlobInput{Marking: expt, DeclaredSize: -1, IdempotencyKey: "same"})
+	if errA != nil || errB != nil {
+		return // second claim rejected: correct
+	}
+	_, _ = a.Write([]byte("one"))
+	_, _ = b.Write([]byte("two (different content)"))
+	ma, _ := a.Commit()
+	mb, _ := b.Commit()
+	var active int
+	_ = env.C.DB.QueryRow(ctx, `SELECT count(*) FROM blobs WHERE state='active'`).Scan(&active)
+	if ma == nil || mb == nil || ma.ID != mb.ID || active != 1 {
+		t.Fatalf("one idempotency key produced %d active blobs (%v vs %v)", active, ma != nil && mb != nil && ma.ID == mb.ID, active)
+	}
+}
+
+// 6. A retried update whose first response was lost must return the original result, not 412.
+func TestRepro6LostUpdateResponse(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	ncr(t, env)
+	eng := env.Ctx(t, "engineer@rel.test")
+	rec, _ := env.C.Records.Create(ctx, eng, "ncr", doc(`{"part_number":"A","status":"open"}`), nil, "")
+	if _, err := env.C.Records.Update(ctx, eng, "ncr", rec.ID, doc(`{"part_number":"A","status":"closed"}`), 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	// The client never saw the response and retries the same operation.
+	if _, err := env.C.Records.Update(ctx, eng, "ncr", rec.ID, doc(`{"part_number":"A","status":"closed"}`), 1, nil); err != nil {
+		t.Fatalf("retry of a successful update failed: %v", err)
+	}
+}
+
+// 7. Idempotency keys must be namespaced by actor: an agent acting for a user must not collide with the user.
+func TestRepro7IdempotencyNamespace(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	ncr(t, env)
+	user := env.Ctx(t, "engineer@rel.test")
+	agent := env.Ctx(t, "agent:assistant")
+	obo := service.Ctx{Principal: user.Principal.DelegatedTo(agent.Principal), RequestID: "r"}
+	a, err := env.C.Records.Create(ctx, user, "ncr", doc(`{"part_number":"A","status":"open"}`), nil, "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := env.C.Records.Create(ctx, obo, "ncr", doc(`{"part_number":"A","status":"open"}`), nil, "k")
+	if err == nil && b.ID == a.ID {
+		t.Fatal("agent acting for the user replayed the user's own operation (shared idempotency namespace)")
+	}
+	var hash string
+	_ = env.C.DB.QueryRow(ctx, `SELECT request_hash FROM idempotency_keys LIMIT 1`).Scan(&hash)
+	t.Logf("stored request hash is an unkeyed digest: %s", hash)
+}
+
+// 8. A mutation must not commit without its audit event.
+func TestRepro8MutationWithoutAudit(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	ncr(t, env)
+	eng := env.Ctx(t, "engineer@rel.test")
+	if _, err := env.C.DB.Exec(ctx, `
+		CREATE FUNCTION no_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN IF NEW.action = 'record.create' THEN RAISE EXCEPTION 'audit sink down'; END IF; RETURN NEW; END $$;
+		CREATE TRIGGER no_audit BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION no_audit();`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := env.C.Records.Create(ctx, eng, "ncr", doc(`{"part_number":"A","status":"open"}`), nil, "")
+	var n int
+	_ = env.C.DB.QueryRow(ctx, `SELECT count(*) FROM records`).Scan(&n)
+	t.Logf("create error: %v; records committed: %d", err, n)
+	if n != 0 {
+		t.Fatal("record committed although its audit event could not be written")
+	}
+}
+
+// 9. Schemas must be authorized before compilation and must not load local files.
+func TestRepro9SchemaLoading(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	intern := env.Ctx(t, "intern@rel.test") // lacks collections:admin
+	_, err := env.C.Records.CreateCollection(ctx, intern, service.CollectionInput{Name: "xx", Marking: markings.MustParse(markings.Uncontrolled),
+		JSONSchema: map[string]any{"$ref": "file:///etc/hostname"}})
+	t.Logf("unauthorized create with a file reference: %v", err)
+	wantCode(t, err, "forbidden")
+}
+
+var _ sync.Mutex

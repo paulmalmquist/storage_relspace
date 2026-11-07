@@ -18,7 +18,10 @@ import (
 	"github.com/paulmalmquist/storage_relspace/internal/testenv"
 )
 
-const expt = "CUI//SP-EXPT//NOFORN"
+const (
+	expt = "CUI//SP-EXPT//NOFORN"
+	app  = "/v1/apps/" + testenv.AppID
+)
 
 const ncrBody = `{"name":"ncr","marking":"cui//sp-expt","indexed_fields":["part_number"],
 	"json_schema":{"type":"object","required":["part_number"],"properties":{"part_number":{"type":"string"},"status":{"type":"string"}}}}`
@@ -78,7 +81,7 @@ func (c *client) upload(subject string, data []byte, extra ...string) map[string
 	md := base64.RawURLEncoding.EncodeToString([]byte(`{"test":"HF-12"}`))
 	h := as(c.t, subject, append([]string{api.MarkingHeader, expt, "Content-Type", "text/plain",
 		"X-Strongbox-Filename", "hot%20fire%20log.txt", "X-Strongbox-Metadata", md}, extra...)...)
-	r := c.do("POST", "/v1/blobs", bytes.NewReader(data), h)
+	r := c.do("POST", app+"/blobs", bytes.NewReader(data), h)
 	if r.status != 201 && r.status != 200 {
 		c.t.Fatalf("upload %d: %s", r.status, r.body)
 	}
@@ -117,7 +120,10 @@ func TestAuthenticationFailures(t *testing.T) {
 			t.Fatal("bad token accepted")
 		}
 	}
-	events, _ := env.C.Audit.List(context.Background(), 0, 100)
+	events, _, err := env.C.Auditing.Events(context.Background(), env.CtxIn(t, "", "admin@rel.test"), "global", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
 	n, sawNobody := 0, false
 	for _, e := range events {
 		if e.Action == "auth.authenticate" {
@@ -139,14 +145,14 @@ func TestBlobRoundTrip(t *testing.T) {
 		t.Fatalf("meta %v", meta)
 	}
 	id := meta["id"].(string)
-	r := c.do("GET", "/v1/blobs/"+id+"/content", nil, as(t, "engineer@rel.test"))
+	r := c.do("GET", app+"/blobs/"+id+"/content", nil, as(t, "engineer@rel.test"))
 	if r.status != 200 || !bytes.Equal(r.body, data) || r.header.Get(api.MarkingHeader) != expt {
 		t.Fatalf("download %d", r.status)
 	}
 	if !strings.Contains(r.header.Get("Content-Disposition"), "filename*=UTF-8''hot%20fire%20log.txt") {
 		t.Fatalf("disposition %s", r.header.Get("Content-Disposition"))
 	}
-	list := c.do("GET", "/v1/blobs", nil, as(t, "engineer@rel.test")).json(t)
+	list := c.do("GET", app+"/blobs", nil, as(t, "engineer@rel.test")).json(t)
 	if items := list["items"].([]any); len(items) != 1 || list["next_cursor"] != nil {
 		t.Fatalf("list %v", list)
 	}
@@ -154,45 +160,53 @@ func TestBlobRoundTrip(t *testing.T) {
 
 func TestBlobIdempotencyConcealmentLimits(t *testing.T) {
 	_, c := setup(t)
-	a := c.upload("engineer@rel.test", []byte("x"), "Idempotency-Key", "upload-1")
-	r := c.do("POST", "/v1/blobs", strings.NewReader("x"), as(t, "engineer@rel.test", api.MarkingHeader, expt, "Idempotency-Key", "upload-1"))
-	if r.status != 200 || r.json(t)["id"] != a["id"] {
-		t.Fatalf("replay %d", r.status)
+	a := c.upload("engineer@rel.test", []byte("x"), "Idempotency-Key", "upload-0001", "X-Strongbox-Visibility", "app")
+	r := c.do("POST", app+"/blobs", strings.NewReader("x"), as(t, "engineer@rel.test", api.MarkingHeader, expt, "Content-Type", "text/plain",
+		"X-Strongbox-Filename", "hot%20fire%20log.txt", "X-Strongbox-Metadata", base64.RawURLEncoding.EncodeToString([]byte(`{"test":"HF-12"}`)),
+		"X-Strongbox-Visibility", "app", "Idempotency-Key", "upload-0001"))
+	if r.status != 200 || r.json(t)["id"] != a["id"] || r.json(t)["replayed"] != true {
+		t.Fatalf("replay %d %s", r.status, r.body)
 	}
-	r = c.do("GET", "/v1/blobs/"+a["id"].(string), nil, as(t, "foreign@rel.test"))
+	r = c.do("POST", app+"/blobs", strings.NewReader("different"), as(t, "engineer@rel.test", api.MarkingHeader, expt, "Content-Type", "text/plain",
+		"X-Strongbox-Filename", "hot%20fire%20log.txt", "X-Strongbox-Metadata", base64.RawURLEncoding.EncodeToString([]byte(`{"test":"HF-12"}`)),
+		"X-Strongbox-Visibility", "app", "Idempotency-Key", "upload-0001"))
+	if r.status != 409 || r.json(t)["code"] != "idempotency_key_reused" {
+		t.Fatalf("changed content under one key: %d %s", r.status, r.body)
+	}
+	r = c.do("GET", app+"/blobs/"+a["id"].(string), nil, as(t, "foreign@rel.test"))
 	if r.status != 404 || r.json(t)["code"] != "not_found" {
 		t.Fatalf("foreign national: %d", r.status)
 	}
-	if c.do("POST", "/v1/blobs", strings.NewReader("x"), as(t, "engineer@rel.test", api.MarkingHeader, "SECRET")).status != 422 {
+	if c.do("POST", app+"/blobs", strings.NewReader("x"), as(t, "engineer@rel.test", api.MarkingHeader, "SECRET")).status != 422 {
 		t.Fatal("bad marking accepted")
 	}
 	big := bytes.Repeat([]byte("x"), 5*1024*1024+1)
-	if r := c.do("POST", "/v1/blobs", bytes.NewReader(big), as(t, "engineer@rel.test", api.MarkingHeader, expt)); r.status != 413 {
+	if r := c.do("POST", app+"/blobs", bytes.NewReader(big), as(t, "engineer@rel.test", api.MarkingHeader, expt)); r.status != 413 {
 		t.Fatalf("oversize: %d", r.status)
 	}
-	if c.do("DELETE", "/v1/blobs/"+a["id"].(string)+"?shred=true", nil, as(t, "engineer@rel.test")).status != 204 {
+	if c.do("DELETE", app+"/blobs/"+a["id"].(string)+"?shred=true", nil, as(t, "engineer@rel.test")).status != 204 {
 		t.Fatal("shred")
 	}
-	if c.do("GET", "/v1/blobs/"+a["id"].(string), nil, as(t, "admin@rel.test")).status != 404 {
+	if c.do("GET", app+"/blobs/"+a["id"].(string), nil, as(t, "admin@rel.test")).status != 404 {
 		t.Fatal("shredded blob still visible")
 	}
 }
 
 func TestRecordsFlow(t *testing.T) {
 	_, c := setup(t)
-	if c.do("POST", "/v1/collections", strings.NewReader(ncrBody), as(t, "engineer@rel.test")).status != 403 {
+	if c.do("POST", app+"/collections", strings.NewReader(ncrBody), as(t, "engineer@rel.test")).status != 403 {
 		t.Fatal("engineer created a collection")
 	}
-	r := c.do("POST", "/v1/collections", strings.NewReader(ncrBody), as(t, "svc-mes@rel.test"))
+	r := c.do("POST", app+"/collections", strings.NewReader(ncrBody), as(t, "svc-mes@rel.test"))
 	if r.status != 201 || r.json(t)["marking"] != "CUI//SP-EXPT" || r.json(t)["encrypted"] != true {
 		t.Fatalf("collection %d %s", r.status, r.body)
 	}
-	r = c.do("POST", "/v1/collections/ncr/records", strings.NewReader(`{"data":{"part_number":"TR-1","status":"open"}}`),
-		as(t, "engineer@rel.test", "Idempotency-Key", "ncr-1"))
+	r = c.do("POST", app+"/collections/ncr/records", strings.NewReader(`{"data":{"part_number":"TR-1","status":"open"}}`),
+		as(t, "engineer@rel.test", "Idempotency-Key", "ncr-create-1"))
 	if r.status != 201 || r.header.Get("ETag") != `"v1"` || r.header.Get(api.MarkingHeader) != "CUI//SP-EXPT" {
 		t.Fatalf("create %d %v", r.status, r.header)
 	}
-	url := "/v1/collections/ncr/records/" + r.json(t)["id"].(string)
+	url := app + "/collections/ncr/records/" + r.json(t)["id"].(string)
 	body := `{"data":{"part_number":"TR-1","status":"closed"}}`
 	if c.do("PUT", url, strings.NewReader(body), as(t, "engineer@rel.test")).status != 428 {
 		t.Fatal("update without If-Match")
@@ -204,16 +218,16 @@ func TestRecordsFlow(t *testing.T) {
 	if c.do("PUT", url, strings.NewReader(body), as(t, "engineer@rel.test", "If-Match", `"v1"`)).status != 412 {
 		t.Fatal("stale update accepted")
 	}
-	q := c.do("POST", "/v1/collections/ncr/query", strings.NewReader(`{"filters":{"part_number":"TR-1"}}`), as(t, "engineer@rel.test")).json(t)
+	q := c.do("POST", app+"/collections/ncr/query", strings.NewReader(`{"filters":{"part_number":"TR-1"}}`), as(t, "engineer@rel.test")).json(t)
 	items := q["items"].([]any)
 	if q["marking"] != "CUI//SP-EXPT" || len(items) != 1 || items[0].(map[string]any)["data"].(map[string]any)["status"] != "closed" {
 		t.Fatalf("query %v", q)
 	}
-	bad := c.do("POST", "/v1/collections/ncr/records", strings.NewReader(`{"data":{"status":"x"}}`), as(t, "engineer@rel.test"))
+	bad := c.do("POST", app+"/collections/ncr/records", strings.NewReader(`{"data":{"status":"x"}}`), as(t, "engineer@rel.test"))
 	if bad.status != 422 || !strings.Contains(bad.json(t)["detail"].(string), "part_number") {
 		t.Fatalf("schema error %d %s", bad.status, bad.body)
 	}
-	if c.do("POST", "/v1/collections/ncr/records", strings.NewReader(`{"data":{},"extra":1}`), as(t, "engineer@rel.test")).status != 422 {
+	if c.do("POST", app+"/collections/ncr/records", strings.NewReader(`{"data":{},"extra":1}`), as(t, "engineer@rel.test")).status != 422 {
 		t.Fatal("unknown field accepted")
 	}
 	if c.do("DELETE", url, nil, as(t, "engineer@rel.test", "If-Match", `"v2"`)).status != 204 {
@@ -223,9 +237,9 @@ func TestRecordsFlow(t *testing.T) {
 
 func TestDelegation(t *testing.T) {
 	_, c := setup(t)
-	c.do("POST", "/v1/collections", strings.NewReader(ncrBody), as(t, "svc-mes@rel.test"))
-	rec := c.do("POST", "/v1/collections/ncr/records", strings.NewReader(`{"data":{"part_number":"TR-9"}}`), as(t, "engineer@rel.test")).json(t)
-	url := "/v1/collections/ncr/records/" + rec["id"].(string)
+	c.do("POST", app+"/collections", strings.NewReader(ncrBody), as(t, "svc-mes@rel.test"))
+	rec := c.do("POST", app+"/collections/ncr/records", strings.NewReader(`{"data":{"part_number":"TR-9"},"visibility":"app"}`), as(t, "engineer@rel.test")).json(t)
+	url := app + "/collections/ncr/records/" + rec["id"].(string)
 	obo := func(agent, user string) map[string]string {
 		return as(t, agent, api.OnBehalfOf, testenv.Token(t, user))
 	}
@@ -272,8 +286,15 @@ func TestAdminEndpoints(t *testing.T) {
 	if v := c.do("GET", "/v1/audit/verify", nil, as(t, "admin@rel.test")).json(t); v["ok"] != true {
 		t.Fatalf("verify %v", v)
 	}
-	if items := c.do("GET", "/v1/audit/events?limit=5", nil, as(t, "admin@rel.test")).json(t)["items"].([]any); len(items) != 5 {
+	if items := c.do("GET", "/v1/audit/events?limit=2", nil, as(t, "admin@rel.test")).json(t)["items"].([]any); len(items) != 2 {
 		t.Fatalf("events %d", len(items))
+	}
+	c.upload("engineer@rel.test", []byte("x"))
+	if v := c.do("GET", app+"/audit/verify", nil, as(t, "admin@rel.test")).json(t); v["ok"] != true || len(v["chains"].([]any)) == 0 {
+		t.Fatalf("app verify %v", v)
+	}
+	if c.do("GET", app+"/audit/events", nil, as(t, "engineer@rel.test")).status != 403 {
+		t.Fatal("non-admin read the app audit log")
 	}
 }
 
@@ -287,7 +308,7 @@ func TestOpenAPIContract(t *testing.T) {
 	}
 	documented := map[string]bool{}
 	for p, ops := range doc.Paths {
-		norm := strings.NewReplacer("{blob_id}", "{id}", "{record_id}", "{id}").Replace(p)
+		norm := p
 		for m := range ops {
 			documented[strings.ToUpper(m)+" "+norm] = true
 		}
@@ -300,5 +321,89 @@ func TestOpenAPIContract(t *testing.T) {
 	}
 	for r := range documented {
 		t.Errorf("openapi.json documents %s, which the server does not serve", r)
+	}
+}
+
+func TestAppScopingOverHTTP(t *testing.T) {
+	_, c := setup(t)
+	m := c.upload("engineer@rel.test", []byte("x"), "X-Strongbox-Visibility", "app")
+	id := m["id"].(string)
+	// outsider is admin of the other app and a stranger here: same response as a missing app.
+	for _, h := range []map[string]string{as(t, "outsider@rel.test")} {
+		for _, path := range []string{app + "/blobs/" + id, "/v1/apps/nosuchapp/blobs/" + id, "/v1/apps/" + testenv.OtherID + "/blobs/" + id,
+			"/v1/apps/BAD/blobs/" + id} {
+			r := c.do("GET", path, nil, h)
+			if r.status != 404 {
+				t.Fatalf("%s: %d", path, r.status)
+			}
+		}
+	}
+	info := c.do("GET", app, nil, as(t, "engineer@rel.test")).json(t)
+	if info["app"] != testenv.App || info["role"] != "editor" {
+		t.Fatalf("app info %v", info)
+	}
+	lim := c.do("GET", "/v1/limits", nil, as(t, "engineer@rel.test")).json(t)
+	if lim["max_single_upload_bytes"] == nil {
+		t.Fatalf("limits %v", lim)
+	}
+}
+
+func TestSharingHistoryOperationsOverHTTP(t *testing.T) {
+	_, c := setup(t)
+	c.do("POST", app+"/collections", strings.NewReader(ncrBody), as(t, "svc-mes@rel.test"))
+	r := c.do("POST", app+"/collections/ncr/records", strings.NewReader(`{"data":{"part_number":"TR-1"}}`), as(t, "engineer@rel.test"))
+	url := app + "/collections/ncr/records/" + r.json(t)["id"].(string)
+	if c.do("GET", url, nil, as(t, "teammate@rel.test")).status != 404 {
+		t.Fatal("private record visible")
+	}
+	g := c.do("POST", url+"/grants", strings.NewReader(`{"subject":"teammate@rel.test","role":"editor"}`), as(t, "engineer@rel.test"))
+	if g.status != 201 {
+		t.Fatalf("grant %d %s", g.status, g.body)
+	}
+	up := c.do("PUT", url, strings.NewReader(`{"data":{"part_number":"TR-1b"}}`), as(t, "teammate@rel.test", "If-Match", `"v1"`, "Idempotency-Key", "mate-op-0001"))
+	if up.status != 200 {
+		t.Fatalf("grantee update %d %s", up.status, up.body)
+	}
+	// Lost response: the same operation replays even though the version moved on.
+	again := c.do("PUT", url, strings.NewReader(`{"data":{"part_number":"TR-1b"}}`), as(t, "teammate@rel.test", "If-Match", `"v1"`, "Idempotency-Key", "mate-op-0001"))
+	if again.status != 200 || again.json(t)["replayed"] != true || again.header.Get("ETag") != `"v2"` {
+		t.Fatalf("replay %d %s", again.status, again.body)
+	}
+	op := c.do("GET", app+"/operations/mate-op-0001", nil, as(t, "teammate@rel.test")).json(t)
+	if op["status"] != "succeeded" || op["resource_version"] != float64(2) {
+		t.Fatalf("operation %v", op)
+	}
+	if c.do("GET", app+"/operations/mate-op-0001", nil, as(t, "engineer@rel.test")).status != 404 {
+		t.Fatal("receipts leak across subjects")
+	}
+	h := c.do("GET", url+"/history", nil, as(t, "engineer@rel.test")).json(t)
+	if items := h["items"].([]any); len(items) != 2 {
+		t.Fatalf("history %v", h)
+	}
+	rs := c.do("POST", url+"/restore", strings.NewReader(`{"version":1}`), as(t, "engineer@rel.test", "If-Match", `"v2"`))
+	if rs.status != 200 || rs.header.Get("ETag") != `"v3"` || rs.json(t)["data"].(map[string]any)["part_number"] != "TR-1" {
+		t.Fatalf("restore %d %s", rs.status, rs.body)
+	}
+	if v := c.do("GET", url+"/history/2", nil, as(t, "engineer@rel.test")).json(t); v["data"].(map[string]any)["part_number"] != "TR-1b" {
+		t.Fatalf("revision 2 %v", v)
+	}
+	sh := c.do("PUT", url+"/sharing", strings.NewReader(`{"visibility":"app"}`), as(t, "teammate@rel.test"))
+	if sh.status != 403 {
+		t.Fatalf("editor changed visibility: %d", sh.status)
+	}
+	ex := c.do("POST", app+"/explain", strings.NewReader(`{"subject":"teammate@rel.test","kind":"record","collection":"ncr","id":"`+
+		r.json(t)["id"].(string)+`"}`), as(t, "admin@rel.test"))
+	if ex.status != 404 { // private: the admin cannot see it, so it is not described
+		t.Fatalf("explain on an invisible resource: %d %s", ex.status, ex.body)
+	}
+	team := c.do("POST", app+"/teams", strings.NewReader(`{"name":"ops"}`), as(t, "engineer@rel.test"))
+	if team.status != 201 {
+		t.Fatalf("team %d %s", team.status, team.body)
+	}
+	if c.do("PUT", app+"/members/intern@rel.test", strings.NewReader(`{"role":"member"}`), as(t, "admin@rel.test")).status != 200 {
+		t.Fatal("admin could not change a member role")
+	}
+	if c.do("PUT", app+"/members/intern@rel.test", strings.NewReader(`{"role":"admin"}`), as(t, "engineer@rel.test")).status != 403 {
+		t.Fatal("non-admin changed a member role")
 	}
 }
