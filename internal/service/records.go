@@ -54,26 +54,64 @@ func recordAAD(aadVersion int, app, coll, id string, m markings.Marking, version
 }
 
 type Collection struct {
-	App           string
-	Name          string
-	Marking       markings.Marking
-	Encrypted     bool
-	IndexedFields []string
-	JSONSchema    map[string]any
-	IndexKeyID    *string
-	TokenVersion  int
-	Version       int
-	HistoryLimit  int
-	CreatedBy     string
-	CreatedAt     time.Time
+	App                  string
+	Name                 string
+	Marking              markings.Marking
+	Encrypted            bool
+	IndexedFields        []string
+	UniqueFields         []string
+	JSONSchema           map[string]any
+	IndexKeyID           *string
+	TokenVersion         int
+	Version              int
+	HistoryLimit         int
+	DeletedRetentionDays int
+	CreatedBy            string
+	CreatedAt            time.Time
+	// Pending is the contract a running migration will switch to. While it is set, writes must
+	// satisfy both contracts and maintain both sets of index and uniqueness tokens.
+	Pending *Collection
 }
 
 func (c *Collection) JSON() map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"name": c.Name, "marking": c.Marking.Banner(), "encrypted": c.Encrypted, "indexed_fields": nonNil(c.IndexedFields),
-		"json_schema": c.JSONSchema, "version": c.Version, "history_limit": c.HistoryLimit, "created_by": c.CreatedBy,
-		"created_at": c.CreatedAt.UTC().Format(time.RFC3339Nano),
+		"unique_fields": nonNil(c.UniqueFields), "json_schema": c.JSONSchema, "version": c.Version, "history_limit": c.HistoryLimit,
+		"deleted_retention_days": c.DeletedRetentionDays, "created_by": c.CreatedBy,
+		"created_at": c.CreatedAt.UTC().Format(time.RFC3339Nano), "pending_version": nil,
 	}
+	if c.Pending != nil {
+		out["pending_version"] = c.Pending.Version
+	}
+	return out
+}
+
+// indexed and unique are the fields writes must maintain tokens for: the current contract's, plus
+// the pending contract's during a migration.
+func (c *Collection) indexed() []string {
+	return union(c.IndexedFields, c.pendingFields(func(p *Collection) []string { return p.IndexedFields }))
+}
+func (c *Collection) unique() []string {
+	return union(c.UniqueFields, c.pendingFields(func(p *Collection) []string { return p.UniqueFields }))
+}
+
+func (c *Collection) pendingFields(f func(*Collection) []string) []string {
+	if c.Pending == nil {
+		return nil
+	}
+	return f(c.Pending)
+}
+
+func union(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range append(append([]string{}, a...), b...) {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 type Record struct {
@@ -81,6 +119,7 @@ type Record struct {
 	Collection     string
 	Marking        markings.Marking
 	Version        int
+	SchemaVersion  *int
 	Data           map[string]any
 	Withheld       bool
 	WithheldReason string
@@ -103,7 +142,7 @@ func (r *Record) JSON() map[string]any {
 	out := map[string]any{
 		"id": r.ID, "collection": r.Collection, "marking": r.Marking.Banner(), "version": r.Version, "data": data,
 		"content_withheld": r.Withheld, "owner": r.Owner, "visibility": r.Visibility, "team_id": optional(r.TeamID),
-		"deleted": r.Deleted, "created_by": r.CreatedBy, "created_at": r.CreatedAt.UTC().Format(time.RFC3339Nano),
+		"deleted": r.Deleted, "schema_version": r.SchemaVersion, "created_by": r.CreatedBy, "created_at": r.CreatedAt.UTC().Format(time.RFC3339Nano),
 		"updated_by": r.UpdatedBy, "updated_at": r.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
 	if r.WithheldReason != "" {
@@ -129,12 +168,14 @@ type Records struct {
 }
 
 type CollectionInput struct {
-	Name          string
-	Marking       markings.Marking
-	JSONSchema    map[string]any
-	IndexedFields []string
-	Encrypted     *bool
-	HistoryLimit  int
+	Name                 string
+	Marking              markings.Marking
+	JSONSchema           map[string]any
+	IndexedFields        []string
+	UniqueFields         []string
+	Encrypted            *bool
+	HistoryLimit         int
+	DeletedRetentionDays int
 }
 
 // RecordInput is a create or update. Visibility and TeamID apply to create only; use Share to
@@ -266,12 +307,23 @@ func (r *Records) CreateCollection(ctx context.Context, c Ctx, in CollectionInpu
 	if history < 1 || history > 10000 {
 		return nil, errs.Invalid("history_limit must be between 1 and 10000")
 	}
+	retention := in.DeletedRetentionDays
+	if retention == 0 {
+		retention = 30
+	}
+	if retention < 1 || retention > 3650 {
+		return nil, errs.Invalid("deleted_retention_days must be between 1 and 3650")
+	}
+	unique, err := uniqueFields(in.UniqueFields, fields)
+	if err != nil {
+		return nil, err
+	}
 	doc := in.JSONSchema
 	if doc == nil {
 		doc = map[string]any{"type": "object"}
 	}
 	var out *Collection
-	err := r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
+	err = r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
 		// Authorize before touching the schema document.
 		if !a.AtLeast("editor") {
 			return r.deny(c, auth.CollectionCreate, "collection", in.Name, &in.Marking, "app role "+a.Role+" cannot define collections",
@@ -287,7 +339,8 @@ func (r *Records) CreateCollection(ctx context.Context, c Ctx, in CollectionInpu
 			return err
 		}
 		if op, err := r.receipts.claim(ctx, tx, c, Operation{Type: "collection.create", Target: in.Name, Marking: in.Marking.Banner(),
-			Payload: map[string]any{"schema": doc, "indexed": nonNil(fields), "encrypted": enc, "history": history}}, 0, ""); err != nil || op != nil {
+			Payload: map[string]any{"schema": doc, "indexed": nonNil(fields), "unique": nonNil(unique), "encrypted": enc, "history": history,
+				"retention": retention}}, 0, ""); err != nil || op != nil {
 			if op != nil {
 				out, err = r.collection(ctx, tx, c.App, in.Name)
 			}
@@ -301,14 +354,19 @@ func (r *Records) CreateCollection(ctx context.Context, c Ctx, in CollectionInpu
 			}
 			indexKey = &id
 		}
-		tag, err := tx.Exec(ctx, `INSERT INTO collections (app, name, marking, encrypted, indexed_fields, json_schema, index_key_id,
-			created_by, token_version, history_limit) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,2,$9) ON CONFLICT DO NOTHING`,
-			c.App, in.Name, in.Marking.Banner(), enc, nonNil(fields), doc, indexKey, c.Principal.Subject, history)
+		tag, err := tx.Exec(ctx, `INSERT INTO collections (app, name, marking, encrypted, indexed_fields, unique_fields, json_schema,
+			index_key_id, created_by, token_version, history_limit, deleted_retention_days) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,2,$10,$11)
+			ON CONFLICT DO NOTHING`,
+			c.App, in.Name, in.Marking.Banner(), enc, nonNil(fields), nonNil(unique), doc, indexKey, c.Principal.Subject, history, retention)
 		if err != nil {
 			return err
 		}
 		if tag.RowsAffected() == 0 {
 			return errs.Conflict("collection %s already exists", in.Name)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO collection_versions (app, collection, version, json_schema, indexed_fields,
+			unique_fields, created_by) VALUES ($1,$2,1,$3,$4,$5,$6)`, c.App, in.Name, doc, nonNil(fields), nonNil(unique), c.Principal.Subject); err != nil {
+			return err
 		}
 		if err := r.receipts.complete(ctx, tx, c, "collection", in.Name, 1, nil); err != nil {
 			return err
@@ -322,10 +380,12 @@ func (r *Records) CreateCollection(ctx context.Context, c Ctx, in CollectionInpu
 func (r *Records) collection(ctx context.Context, tx pgx.Tx, app, name string) (*Collection, error) {
 	col := Collection{App: app}
 	var marking string
-	err := tx.QueryRow(ctx, `SELECT name, marking, encrypted, indexed_fields, json_schema, index_key_id, token_version,
-		version, history_limit, created_by, created_at FROM collections WHERE app = $1 AND name = $2`, app, name).
-		Scan(&col.Name, &marking, &col.Encrypted, &col.IndexedFields, &col.JSONSchema, &col.IndexKeyID, &col.TokenVersion,
-			&col.Version, &col.HistoryLimit, &col.CreatedBy, &col.CreatedAt)
+	var pending *int
+	err := tx.QueryRow(ctx, `SELECT name, marking, encrypted, indexed_fields, unique_fields, json_schema, index_key_id,
+		token_version, version, history_limit, deleted_retention_days, created_by, created_at, pending_version
+		FROM collections WHERE app = $1 AND name = $2`, app, name).
+		Scan(&col.Name, &marking, &col.Encrypted, &col.IndexedFields, &col.UniqueFields, &col.JSONSchema, &col.IndexKeyID,
+			&col.TokenVersion, &col.Version, &col.HistoryLimit, &col.DeletedRetentionDays, &col.CreatedBy, &col.CreatedAt, &pending)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errs.NotFound("collection not found")
 	}
@@ -335,7 +395,52 @@ func (r *Records) collection(ctx context.Context, tx pgx.Tx, app, name string) (
 	if col.Marking, err = markings.Parse(marking); err != nil {
 		return nil, errs.Integrity("stored marking is invalid")
 	}
+	if pending != nil {
+		if col.Pending, err = r.contractVersion(ctx, tx, &col, *pending); err != nil {
+			return nil, err
+		}
+	}
 	return &col, nil
+}
+
+// contractVersion returns col as it is (or would be) under contract version v.
+func (r *Records) contractVersion(ctx context.Context, tx pgx.Tx, col *Collection, v int) (*Collection, error) {
+	out := *col
+	out.Pending = nil
+	out.Version = v
+	err := tx.QueryRow(ctx, `SELECT json_schema, indexed_fields, unique_fields FROM collection_versions
+		WHERE app = $1 AND collection = $2 AND version = $3`, col.App, col.Name, v).Scan(&out.JSONSchema, &out.IndexedFields, &out.UniqueFields)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, errs.NotFound("contract version %d not found", v)
+	}
+	return &out, err
+}
+
+// lockContract serializes contract changes with writes: writers hold the collection's lock shared
+// for their transaction, a contract change or migration flip holds it exclusively. A writer that
+// starts after a change is staged therefore always sees it.
+func lockContract(ctx context.Context, tx pgx.Tx, app, name string, exclusive bool) error {
+	fn := "pg_advisory_xact_lock_shared"
+	if exclusive {
+		fn = "pg_advisory_xact_lock"
+	}
+	_, err := tx.Exec(ctx, `SELECT `+fn+`(hashtextextended('strongbox.contract:' || $1 || '/' || $2, 0))`, app, name)
+	return err
+}
+
+func uniqueFields(unique, indexed []string) ([]string, error) {
+	in := map[string]bool{}
+	for _, f := range indexed {
+		in[f] = true
+	}
+	var out []string
+	for _, f := range union(unique, nil) {
+		if !in[f] {
+			return nil, errs.Invalid("unique field %q must also be an indexed field", f)
+		}
+		out = append(out, f)
+	}
+	return out, nil
 }
 
 // readableCollection loads a collection and checks the caller may see it.
@@ -408,6 +513,15 @@ func (r *Records) validate(col *Collection, data map[string]any) error {
 	if err := sch.Validate(inst); err != nil {
 		return errs.Invalid("schema validation failed: %s", sanitize(err, 500))
 	}
+	if col.Pending != nil {
+		psch, err := r.schema(col.Pending)
+		if err != nil {
+			return err
+		}
+		if err := psch.Validate(inst); err != nil {
+			return errs.Invalid("contract version %d (being migrated to) rejects this record: %s", col.Pending.Version, sanitize(err, 500))
+		}
+	}
 	return nil
 }
 
@@ -460,7 +574,7 @@ func (r *Records) tokens(ctx context.Context, tx pgx.Tx, col *Collection, data m
 		key = k
 	}
 	var out []indexToken
-	for _, f := range col.IndexedFields {
+	for _, f := range col.indexed() {
 		v, ok := data[f]
 		if !ok {
 			continue
@@ -482,17 +596,54 @@ func (r *Records) tokens(ctx context.Context, tx pgx.Tx, col *Collection, data m
 	return out, nil
 }
 
+// writeIndex replaces a record's equality tokens and uniqueness claims. A unique value already
+// held by another record is a conflict; the error does not say which record holds it, since that
+// record may be invisible to the caller.
 func (r *Records) writeIndex(ctx context.Context, tx pgx.Tx, col *Collection, id string, toks []indexToken) error {
+	_, err := r.writeTokens(ctx, tx, col, id, toks, false)
+	return err
+}
+
+// writeTokens is writeIndex that reports the unique field that could not be claimed instead of
+// failing (the migration job collects these).
+func (r *Records) writeTokens(ctx context.Context, tx pgx.Tx, col *Collection, id string, toks []indexToken, tolerant bool) (string, error) {
 	if _, err := tx.Exec(ctx, `DELETE FROM record_index WHERE app = $1 AND record_id = $2`, col.App, id); err != nil {
-		return err
+		return "", err
 	}
 	for _, t := range toks {
 		if _, err := tx.Exec(ctx, `INSERT INTO record_index (app, collection, field, token, record_id) VALUES ($1,$2,$3,$4,$5)
 			ON CONFLICT DO NOTHING`, col.App, col.Name, t.field, t.token, id); err != nil {
-			return err
+			return "", err
 		}
 	}
-	return nil
+	unique := col.unique()
+	if len(unique) == 0 {
+		return "", nil
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM record_unique WHERE app = $1 AND record_id = $2`, col.App, id); err != nil {
+		return "", err
+	}
+	isUnique := map[string]bool{}
+	for _, f := range unique {
+		isUnique[f] = true
+	}
+	for _, t := range toks {
+		if !isUnique[t.field] {
+			continue
+		}
+		tag, err := tx.Exec(ctx, `INSERT INTO record_unique (app, collection, field, token, record_id) VALUES ($1,$2,$3,$4,$5)
+			ON CONFLICT DO NOTHING`, col.App, col.Name, t.field, t.token, id)
+		if err != nil {
+			return "", err
+		}
+		if tag.RowsAffected() == 0 {
+			if tolerant {
+				return t.field, nil
+			}
+			return t.field, errs.Coded(409, "unique_violation", "another record in %s already has this %s", col.Name, t.field)
+		}
+	}
+	return "", nil
 }
 
 type content struct {
@@ -519,15 +670,17 @@ type recordRow struct {
 	version, aadVersion                                              int
 	createdAt, updatedAt                                             time.Time
 	deletedAt                                                        *time.Time
+	schemaVersion                                                    *int
 }
 
 const recordCols = `id, collection, marking, data_plain, data_sealed, key_id, version, aad_version, owner, visibility, team_id,
-	created_by, created_at, updated_by, updated_at, deleted_at`
+	created_by, created_at, updated_by, updated_at, deleted_at, schema_version`
 
 func scanRecord(row pgx.Row) (*recordRow, error) {
 	var rr recordRow
 	err := row.Scan(&rr.id, &rr.collection, &rr.marking, &rr.plain, &rr.sealed, &rr.keyID, &rr.version, &rr.aadVersion,
-		&rr.owner, &rr.visibility, &rr.teamID, &rr.createdBy, &rr.createdAt, &rr.updatedBy, &rr.updatedAt, &rr.deletedAt)
+		&rr.owner, &rr.visibility, &rr.teamID, &rr.createdBy, &rr.createdAt, &rr.updatedBy, &rr.updatedAt, &rr.deletedAt,
+		&rr.schemaVersion)
 	return &rr, err
 }
 
@@ -571,7 +724,7 @@ func (r *Records) view(ctx context.Context, tx pgx.Tx, c Ctx, col *Collection, r
 	if err != nil {
 		return nil, errs.Integrity("stored marking is invalid")
 	}
-	rec := &Record{ID: rr.id, Collection: col.Name, Marking: m, Version: rr.version, Owner: rr.owner, Visibility: rr.visibility,
+	rec := &Record{ID: rr.id, Collection: col.Name, Marking: m, Version: rr.version, SchemaVersion: rr.schemaVersion, Owner: rr.owner, Visibility: rr.visibility,
 		Deleted: rr.deletedAt != nil, CreatedBy: rr.createdBy, CreatedAt: rr.createdAt, UpdatedBy: rr.updatedBy, UpdatedAt: rr.updatedAt}
 	if rr.teamID != nil {
 		rec.TeamID = *rr.teamID
@@ -616,6 +769,9 @@ func (r *Records) writable(ctx context.Context, tx pgx.Tx, c Ctx, a *Access, col
 func (r *Records) Create(ctx context.Context, c Ctx, coll string, in RecordInput) (*Record, error) {
 	var out *Record
 	err := r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
+		if err := lockContract(ctx, tx, c.App, coll, false); err != nil {
+			return err
+		}
 		col, err := r.readableCollection(ctx, tx, c, coll, false)
 		if err != nil {
 			return err
@@ -655,9 +811,9 @@ func (r *Records) Create(ctx context.Context, c Ctx, coll string, in RecordInput
 			return err
 		}
 		rr, err := scanRecord(tx.QueryRow(ctx, `INSERT INTO records (app, id, collection, marking, data_plain, data_sealed, key_id,
-			version, created_by, updated_by, owner, visibility, team_id, aad_version)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$8,$8,$9,$10,2) RETURNING `+recordCols,
-			c.App, id, col.Name, m.Banner(), st.plain, st.sealed, st.keyID, c.Principal.Subject, vis, team))
+			version, created_by, updated_by, owner, visibility, team_id, aad_version, schema_version)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$8,$8,$9,$10,2,$11) RETURNING `+recordCols,
+			c.App, id, col.Name, m.Banner(), st.plain, st.sealed, st.keyID, c.Principal.Subject, vis, team, col.Version))
 		if err != nil {
 			return err
 		}
@@ -718,6 +874,9 @@ func (r *Records) Get(ctx context.Context, c Ctx, coll, id string) (*Record, err
 func (r *Records) Update(ctx context.Context, c Ctx, coll, id string, in RecordInput, expectedVersion int) (*Record, error) {
 	var out *Record
 	err := r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
+		if err := lockContract(ctx, tx, c.App, coll, false); err != nil {
+			return err
+		}
 		col, err := r.readableCollection(ctx, tx, c, coll, false)
 		if err != nil {
 			return err
@@ -767,9 +926,9 @@ func (r *Records) Update(ctx context.Context, c Ctx, coll, id string, in RecordI
 		}
 		// Compare-and-swap: concurrent writers serialize on the row lock and the loser's WHERE fails.
 		nr, err := scanRecord(tx.QueryRow(ctx, `UPDATE records SET marking=$5, data_plain=$6, data_sealed=$7, key_id=$8,
-			version=$9, aad_version=2, updated_by=$10, updated_at=now()
+			version=$9, aad_version=2, updated_by=$10, updated_at=now(), schema_version=$11
 			WHERE app=$1 AND collection=$2 AND id=$3 AND version=$4 AND deleted_at IS NULL RETURNING `+recordCols,
-			c.App, col.Name, id, expectedVersion, m.Banner(), st.plain, st.sealed, st.keyID, next, c.Principal.Subject))
+			c.App, col.Name, id, expectedVersion, m.Banner(), st.plain, st.sealed, st.keyID, next, c.Principal.Subject, col.Version))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errs.PreconditionFailed("record changed concurrently; it is no longer at version %d", expectedVersion)
 		}
@@ -843,6 +1002,10 @@ func (r *Records) Delete(ctx context.Context, c Ctx, coll, id string, expectedVe
 				return err
 			}
 			if _, err := tx.Exec(ctx, `DELETE FROM record_index WHERE app=$1 AND record_id=$2`, c.App, id); err != nil {
+				return err
+			}
+			// A deleted record releases its unique values.
+			if _, err := tx.Exec(ctx, `DELETE FROM record_unique WHERE app=$1 AND record_id=$2`, c.App, id); err != nil {
 				return err
 			}
 			if err := r.revision(ctx, tx, c, col, nr, "delete", 0); err != nil {

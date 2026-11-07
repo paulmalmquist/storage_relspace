@@ -308,6 +308,7 @@ type Record struct {
 	Visibility      string         `json:"visibility"`
 	TeamID          *string        `json:"team_id"`
 	Deleted         bool           `json:"deleted"`
+	SchemaVersion   *int           `json:"schema_version"`
 	Replayed        bool           `json:"replayed,omitempty"`
 	CreatedBy       string         `json:"created_by"`
 	CreatedAt       time.Time      `json:"created_at"`
@@ -337,10 +338,14 @@ type Collection struct {
 	Encrypted     bool           `json:"encrypted"`
 	IndexedFields []string       `json:"indexed_fields"`
 	JSONSchema    map[string]any `json:"json_schema"`
+	UniqueFields  []string       `json:"unique_fields"`
 	Version       int            `json:"version"`
-	HistoryLimit  int            `json:"history_limit"`
-	CreatedBy     string         `json:"created_by"`
-	CreatedAt     time.Time      `json:"created_at"`
+	// PendingVersion is set while a migration to a new contract runs.
+	PendingVersion       *int      `json:"pending_version"`
+	HistoryLimit         int       `json:"history_limit"`
+	DeletedRetentionDays int       `json:"deleted_retention_days"`
+	CreatedBy            string    `json:"created_by"`
+	CreatedAt            time.Time `json:"created_at"`
 }
 
 type Page[T any] struct {
@@ -656,14 +661,66 @@ type CollectionSpec struct {
 	Marking       string         `json:"marking"`
 	JSONSchema    map[string]any `json:"json_schema,omitempty"`
 	IndexedFields []string       `json:"indexed_fields,omitempty"`
+	UniqueFields  []string       `json:"unique_fields,omitempty"`
 	Encrypted     *bool          `json:"encrypted,omitempty"`
 	HistoryLimit  int            `json:"history_limit,omitempty"`
+	// DeletedRetentionDays: how long deleted records stay restorable (default 30).
+	DeletedRetentionDays int `json:"deleted_retention_days,omitempty"`
 }
 
 func (a *App) CreateCollection(ctx context.Context, s CollectionSpec) (*Collection, error) {
 	var out Collection
 	return &out, a.c.do(ctx, request{method: "POST", path: a.base + "/collections", body: jsonBody(s),
 		headers: jsonHeaders("Idempotency-Key", operationID(ctx))}, &out)
+}
+
+// Contract is a new version of a collection's contract.
+type Contract struct {
+	JSONSchema      map[string]any `json:"json_schema"`
+	IndexedFields   []string       `json:"indexed_fields,omitempty"`
+	UniqueFields    []string       `json:"unique_fields,omitempty"`
+	Defaults        map[string]any `json:"defaults,omitempty"`
+	ExpectedVersion int            `json:"expected_version"`
+}
+
+type Migration struct {
+	ID          string `json:"id"`
+	Collection  string `json:"collection"`
+	FromVersion int    `json:"from_version"`
+	ToVersion   int    `json:"to_version"`
+	State       string `json:"state"` // running | succeeded | failed | cancelled
+	Processed   int64  `json:"processed"`
+	Rewritten   int64  `json:"rewritten"`
+	Failures    []struct {
+		RecordID string `json:"record_id"`
+		Reason   string `json:"reason"`
+	} `json:"failures"`
+}
+
+type ContractChange struct {
+	Collection Collection `json:"collection"`
+	Version    int        `json:"version"`
+	Immediate  bool       `json:"immediate"`
+	Reason     string     `json:"reason,omitempty"`
+	Migration  *Migration `json:"migration"`
+}
+
+// ChangeContract stages a new contract version. Immediate is true when it took effect at once;
+// otherwise Migration tracks the job that validates existing records before the switch.
+func (a *App) ChangeContract(ctx context.Context, collection string, c Contract) (*ContractChange, error) {
+	var out ContractChange
+	return &out, a.c.do(ctx, request{method: "PUT", path: a.base + "/collections/" + url.PathEscape(collection) + "/contract",
+		body: jsonBody(c), headers: jsonHeaders("Idempotency-Key", operationID(ctx))}, &out)
+}
+
+func (a *App) GetMigration(ctx context.Context, collection, id string) (*Migration, error) {
+	var out Migration
+	return &out, a.c.do(ctx, request{method: "GET", path: a.base + "/collections/" + url.PathEscape(collection) + "/migrations/" + url.PathEscape(id)}, &out)
+}
+
+func (a *App) CancelMigration(ctx context.Context, collection, id string) (*Migration, error) {
+	var out Migration
+	return &out, a.c.do(ctx, request{method: "POST", path: a.base + "/collections/" + url.PathEscape(collection) + "/migrations/" + url.PathEscape(id) + "/cancel"}, &out)
 }
 
 func (a *App) ListCollections(ctx context.Context) ([]Collection, error) {

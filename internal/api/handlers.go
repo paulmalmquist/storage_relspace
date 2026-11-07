@@ -444,12 +444,14 @@ func (s *Server) deleteBlob(w http.ResponseWriter, r *http.Request, c service.Ct
 // ---- collections & records ------------------------------------------------------------------------
 
 type collectionIn struct {
-	Name          string         `json:"name"`
-	Marking       string         `json:"marking"`
-	JSONSchema    map[string]any `json:"json_schema"`
-	IndexedFields []string       `json:"indexed_fields"`
-	Encrypted     *bool          `json:"encrypted"`
-	HistoryLimit  int            `json:"history_limit"`
+	UniqueFields         []string       `json:"unique_fields"`
+	DeletedRetentionDays int            `json:"deleted_retention_days"`
+	Name                 string         `json:"name"`
+	Marking              string         `json:"marking"`
+	JSONSchema           map[string]any `json:"json_schema"`
+	IndexedFields        []string       `json:"indexed_fields"`
+	Encrypted            *bool          `json:"encrypted"`
+	HistoryLimit         int            `json:"history_limit"`
 }
 
 type recordIn struct {
@@ -505,7 +507,8 @@ func (s *Server) createCollection(w http.ResponseWriter, r *http.Request, c serv
 		return err
 	}
 	col, err := s.c.Records.CreateCollection(r.Context(), c, service.CollectionInput{Name: in.Name, Marking: m,
-		JSONSchema: in.JSONSchema, IndexedFields: in.IndexedFields, Encrypted: in.Encrypted, HistoryLimit: in.HistoryLimit})
+		JSONSchema: in.JSONSchema, IndexedFields: in.IndexedFields, UniqueFields: in.UniqueFields, Encrypted: in.Encrypted,
+		HistoryLimit: in.HistoryLimit, DeletedRetentionDays: in.DeletedRetentionDays})
 	if err != nil {
 		return err
 	}

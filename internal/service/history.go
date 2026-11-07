@@ -197,6 +197,9 @@ func (r *Records) revisionRecord(ctx context.Context, tx pgx.Tx, c Ctx, col *Col
 func (r *Records) Restore(ctx context.Context, c Ctx, coll, id string, version, expectedVersion int) (*Record, error) {
 	var out *Record
 	err := r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
+		if err := lockContract(ctx, tx, c.App, coll, false); err != nil {
+			return err
+		}
 		col, err := r.readableCollection(ctx, tx, c, coll, false)
 		if err != nil {
 			return err
@@ -269,9 +272,9 @@ func (r *Records) Restore(ctx context.Context, c Ctx, coll, id string, version, 
 			return err
 		}
 		nr, err := scanRecord(tx.QueryRow(ctx, `UPDATE records SET marking=$5, data_plain=$6, data_sealed=$7, key_id=$8,
-			version=$9, aad_version=2, updated_by=$10, updated_at=now(), deleted_at=NULL
+			version=$9, aad_version=2, updated_by=$10, updated_at=now(), deleted_at=NULL, schema_version=$11
 			WHERE app=$1 AND collection=$2 AND id=$3 AND version=$4 RETURNING `+recordCols,
-			c.App, col.Name, id, expectedVersion, m.Banner(), st.plain, st.sealed, st.keyID, next, c.Principal.Subject))
+			c.App, col.Name, id, expectedVersion, m.Banner(), st.plain, st.sealed, st.keyID, next, c.Principal.Subject, col.Version))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errs.PreconditionFailed("record changed concurrently")
 		}

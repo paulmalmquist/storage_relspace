@@ -1742,6 +1742,245 @@
     }
    }
   },
+  "/v1/apps/{app}/collections/{name}/contract": {
+   "put": {
+    "operationId": "changeContract",
+    "summary": "Stage a new contract version (editor/admin role + collections:admin)",
+    "tags": [
+     "contracts"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Took effect at once: every record valid before is provably valid now",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ContractChange"
+        }
+       }
+      }
+     },
+     "202": {
+      "description": "Migration started; the collection switches when every live record passes",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ContractChange"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "412": {
+      "$ref": "#/components/responses/PreconditionFailed"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ContractIn"
+       }
+      }
+     }
+    },
+    "description": "While a migration runs, writes must satisfy both contracts. Unique fields must be indexed; a unique violation (409 unique_violation) never names the record holding the value."
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/versions": {
+   "get": {
+    "operationId": "contractVersions",
+    "summary": "Every contract version, newest first",
+    "tags": [
+     "contracts"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ContractVersions"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/migrations/{id}": {
+   "get": {
+    "operationId": "getMigration",
+    "summary": "A contract migration's progress",
+    "tags": [
+     "contracts"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Migration"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     }
+    }
+   }
+  },
+  "/v1/apps/{app}/collections/{name}/migrations/{id}/cancel": {
+   "post": {
+    "operationId": "cancelMigration",
+    "summary": "Abandon a running migration; the collection keeps its version",
+    "tags": [
+     "contracts"
+    ],
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/app"
+     },
+     {
+      "$ref": "#/components/parameters/name"
+     },
+     {
+      "$ref": "#/components/parameters/id"
+     },
+     {
+      "$ref": "#/components/parameters/OnBehalfOf"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Migration"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthenticated"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "429": {
+      "$ref": "#/components/responses/TooMany"
+     },
+     "503": {
+      "$ref": "#/components/responses/Unavailable"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     }
+    }
+   }
+  },
   "/v1/apps/{app}/collections/{name}/records": {
    "post": {
     "operationId": "createRecord",
@@ -3075,7 +3314,7 @@
     }
    },
    "Conflict": {
-    "description": "Conflict (codes: conflict, idempotency_key_reused, operation_in_progress, upload_expired, upload_incomplete)",
+    "description": "Conflict (codes: conflict, idempotency_key_reused, operation_in_progress, upload_expired, upload_incomplete, unique_violation, migration_in_progress, migration_finished)",
     "content": {
      "application/problem+json": {
       "schema": {
@@ -4379,6 +4618,12 @@
       },
       "maxItems": 16
      },
+     "unique_fields": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
      "encrypted": {
       "type": "boolean"
      },
@@ -4386,6 +4631,11 @@
       "type": "integer",
       "minimum": 1,
       "maximum": 10000
+     },
+     "deleted_retention_days": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3650
      }
     },
     "additionalProperties": false,
@@ -4416,10 +4666,29 @@
       "type": "object",
       "additionalProperties": true
      },
+     "unique_fields": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
      "version": {
       "type": "integer"
      },
+     "pending_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
      "history_limit": {
+      "type": "integer"
+     },
+     "deleted_retention_days": {
       "type": "integer"
      },
      "created_by": {
@@ -4436,8 +4705,220 @@
      "marking",
      "encrypted",
      "indexed_fields",
+     "unique_fields",
      "json_schema",
-     "version"
+     "version",
+     "pending_version"
+    ]
+   },
+   "ContractIn": {
+    "type": "object",
+    "properties": {
+     "json_schema": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "indexed_fields": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "unique_fields": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "defaults": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "expected_version": {
+      "type": "integer",
+      "minimum": 1
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "json_schema",
+     "expected_version"
+    ]
+   },
+   "Migration": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "collection": {
+      "type": "string"
+     },
+     "from_version": {
+      "type": "integer"
+     },
+     "to_version": {
+      "type": "integer"
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "running",
+       "succeeded",
+       "failed",
+       "cancelled"
+      ]
+     },
+     "processed": {
+      "type": "integer"
+     },
+     "rewritten": {
+      "type": "integer"
+     },
+     "failures": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "record_id": {
+         "type": "string"
+        },
+        "reason": {
+         "type": "string"
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "record_id",
+        "reason"
+       ]
+      }
+     },
+     "created_by": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "finished_at": {
+      "anyOf": [
+       {
+        "type": "string",
+        "format": "date-time"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "collection",
+     "from_version",
+     "to_version",
+     "state",
+     "processed",
+     "rewritten",
+     "failures"
+    ]
+   },
+   "ContractChange": {
+    "type": "object",
+    "properties": {
+     "collection": {
+      "$ref": "#/components/schemas/CollectionOut"
+     },
+     "version": {
+      "type": "integer"
+     },
+     "immediate": {
+      "type": "boolean"
+     },
+     "reason": {
+      "type": "string"
+     },
+     "migration": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/Migration"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "collection",
+     "version",
+     "immediate",
+     "migration"
+    ]
+   },
+   "ContractVersions": {
+    "type": "object",
+    "properties": {
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "version": {
+         "type": "integer"
+        },
+        "json_schema": {
+         "type": "object",
+         "additionalProperties": true
+        },
+        "indexed_fields": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "unique_fields": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "created_by": {
+         "type": "string"
+        },
+        "created_at": {
+         "type": "string",
+         "format": "date-time"
+        },
+        "current": {
+         "type": "boolean"
+        },
+        "pending": {
+         "type": "boolean"
+        }
+       },
+       "additionalProperties": false,
+       "required": [
+        "version",
+        "json_schema",
+        "indexed_fields",
+        "unique_fields",
+        "current",
+        "pending"
+       ]
+      }
+     }
+    },
+    "additionalProperties": false,
+    "required": [
+     "items"
     ]
    },
    "CollectionList": {
@@ -4538,6 +5019,16 @@
      "deleted": {
       "type": "boolean"
      },
+     "schema_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
      "replayed": {
       "type": "boolean"
      },
@@ -4636,7 +5127,8 @@
        "create",
        "update",
        "delete",
-       "restore"
+       "restore",
+       "migrate"
       ]
      },
      "marking": {

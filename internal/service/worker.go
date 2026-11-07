@@ -69,6 +69,7 @@ func enqueueObjectDelete(ctx context.Context, tx pgx.Tx, app, blobID string, key
 type Worker struct {
 	core     *Core
 	blobs    *Blobs
+	records  *Records
 	Backend  store.Backend // where object deletions go (the blob backend)
 	ID       string
 	Batch    int
@@ -90,6 +91,7 @@ type WorkerStats struct {
 	JobsDone, JobsFailed, JobsDead int
 	UploadsAborted                 int
 	RecordsPurged                  int
+	MigrationBatches               int
 	ReceiptsExpired                int
 	AuditDelivered                 int
 	OldestPendingJob               time.Duration // outbox lag
@@ -142,6 +144,9 @@ func (w *Worker) RunOnce(ctx context.Context) (WorkerStats, error) {
 		// One app's failure (a corrupt row, a lock timeout) must not starve the others.
 		if err := w.maintain(ctx, app, &s); err != nil {
 			failed = append(failed, fmt.Errorf("maintain %s: %w", app, err))
+		}
+		if err := w.migrate(ctx, app, &s); err != nil {
+			failed = append(failed, fmt.Errorf("migrate %s: %w", app, err))
 		}
 	}
 	if err := w.deliverAudit(ctx, &s); err != nil {
@@ -338,6 +343,42 @@ func (w *Worker) maintain(ctx context.Context, app string, s *WorkerStats) error
 		s.ReceiptsExpired += int(tag.RowsAffected())
 		return nil
 	})
+}
+
+// migrate advances each running contract migration in the app by up to migrationBatchesPerPass
+// batches.
+const migrationBatchesPerPass = 20
+
+func (w *Worker) migrate(ctx context.Context, app string, s *WorkerStats) error {
+	if w.records == nil {
+		return nil
+	}
+	var running []*Migration
+	err := w.core.DB.Run(ctx, w.worker(app), func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT `+migrationCols+` FROM collection_migrations WHERE app = $1 AND state = 'running'
+			ORDER BY created_at LIMIT 10`, app)
+		if err != nil {
+			return err
+		}
+		running, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (*Migration, error) { return scanMigration(r) })
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	for _, m := range running {
+		for range migrationBatchesPerPass {
+			done, err := w.records.migrateBatch(ctx, w.core.DB, w.worker(app), app, m, w.core.Audit)
+			if err != nil {
+				return fmt.Errorf("migration %s: %w", m.ID, err)
+			}
+			s.MigrationBatches++
+			if done {
+				break
+			}
+		}
+	}
+	return nil
 }
 
 func (w *Worker) deliverAudit(ctx context.Context, s *WorkerStats) error {

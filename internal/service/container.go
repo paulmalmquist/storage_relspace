@@ -113,7 +113,7 @@ func Build(ctx context.Context, cfg *config.Config, o Overrides) (*Container, er
 		Principals: registry, PrincipalAdmin: &Principals{Core: core, Registry: registry}, Blobs: blobs, Records: records,
 		Sharing:  &Sharing{Core: core, authz: authz, records: records, blobs: blobs, AppEnv: cfg.AppEnv, Registry: registry},
 		Auditing: &Auditing{core: core},
-		Worker: &Worker{core: core, blobs: blobs, Backend: backend, ID: "worker-" + nonce(), Batch: 100, Lease: time.Minute,
+		Worker: &Worker{core: core, blobs: blobs, records: records, Backend: backend, ID: "worker-" + nonce(), Batch: 100, Lease: time.Minute,
 			Interval: 15 * time.Second},
 		receipts: rc, Verifier: verifier, DelegationVerifier: delegation,
 	}, nil

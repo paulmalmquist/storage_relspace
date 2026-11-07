@@ -290,3 +290,31 @@ func TestLargeBlobThroughUploadSession(t *testing.T) {
 	}
 	_ = b2
 }
+
+func TestContractChangeThroughSDK(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	adm, eng := h.app(t, "admin@rel.test"), h.app(t, "engineer@rel.test")
+	if _, err := adm.CreateCollection(ctx, client.CollectionSpec{Name: "tasks", Marking: "CUI//SP-EXPT"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.CreateRecord(ctx, "tasks", client.RecordInput{Data: map[string]any{"title": "a"}}); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := adm.ChangeContract(ctx, "tasks", client.Contract{JSONSchema: map[string]any{"type": "object", "required": []string{"state"}},
+		Defaults: map[string]any{"state": "open"}, ExpectedVersion: 1})
+	if err != nil || ch.Immediate || ch.Migration == nil || ch.Collection.PendingVersion == nil {
+		t.Fatalf("change %+v %v", ch, err)
+	}
+	if _, err := h.env.C.Worker.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m, err := eng.GetMigration(ctx, "tasks", ch.Migration.ID)
+	if err != nil || m.State != "succeeded" || m.Rewritten != 1 {
+		t.Fatalf("migration %+v %v", m, err)
+	}
+	_, err = adm.ChangeContract(ctx, "tasks", client.Contract{JSONSchema: map[string]any{"type": "object"}, ExpectedVersion: 1})
+	if e, ok := err.(*client.APIError); !ok || e.Status != 412 {
+		t.Fatalf("stale contract change: %v", err)
+	}
+}
