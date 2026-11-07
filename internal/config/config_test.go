@@ -21,7 +21,10 @@ func TestDefaultsAndLists(t *testing.T) {
 		t.Fatalf("unexpected config %+v", c)
 	}
 	if c.DatabaseURL != "postgresql://u@h:5432/db" {
-		t.Fatalf("SQLAlchemy URL not normalized: %s", c.DatabaseURL)
+		t.Fatalf("legacy driver-qualified URL not normalized: %s", c.DatabaseURL)
+	}
+	if len(c.Deprecations) != 1 || !strings.Contains(c.Deprecations[0], "driver-qualified") {
+		t.Fatalf("legacy URL not reported as deprecated: %v", c.Deprecations)
 	}
 }
 

@@ -1,6 +1,7 @@
 // Package testenv builds a real container against Postgres for integration tests.
 // Each test gets its own schema, so tests can run in parallel and leave nothing behind.
-// Tests are skipped unless STRONGBOX_TEST_DATABASE_URL is set.
+// Tests are skipped when STRONGBOX_TEST_DATABASE_URL is unset, unless STRONGBOX_REQUIRE_INTEGRATION=1
+// (set in CI), in which case a missing database fails the run instead of silently skipping.
 package testenv
 
 import (
@@ -41,13 +42,23 @@ type Env struct {
 	Schema  string
 }
 
-// New returns a fresh environment or skips the test when no database is configured.
-func New(t *testing.T) *Env {
+// DatabaseURL returns the integration database URL, skipping (locally) or failing (CI) without one.
+func DatabaseURL(t testing.TB) string {
 	t.Helper()
 	url := os.Getenv("STRONGBOX_TEST_DATABASE_URL")
 	if url == "" {
+		if os.Getenv("STRONGBOX_REQUIRE_INTEGRATION") == "1" {
+			t.Fatal("STRONGBOX_REQUIRE_INTEGRATION=1 but STRONGBOX_TEST_DATABASE_URL is not set")
+		}
 		t.Skip("set STRONGBOX_TEST_DATABASE_URL to run integration tests")
 	}
+	return url
+}
+
+// New returns a fresh environment or skips the test when no database is configured.
+func New(t *testing.T) *Env {
+	t.Helper()
+	url := DatabaseURL(t)
 	ctx := context.Background()
 	schema := store.NewID("t")
 	admin, err := store.Open(ctx, url, "")

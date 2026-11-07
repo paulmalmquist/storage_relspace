@@ -57,6 +57,9 @@ type Config struct {
 	RequireFIPS bool
 	ExposeDocs  bool
 	LogLevel    string
+
+	// Deprecations lists accepted-but-deprecated settings; commands log them at startup.
+	Deprecations []string
 }
 
 // Load reads the process environment.
@@ -132,7 +135,7 @@ func FromLookup(lookup func(string) (string, bool)) (*Config, error) {
 	r := &reader{lookup: lookup}
 	c := &Config{
 		Env:                        r.str("ENV", "dev"),
-		DatabaseURL:                normalizeDBURL(r.str("DATABASE_URL", "postgres://postgres@localhost:5432/strongbox")),
+		DatabaseURL:                r.str("DATABASE_URL", "postgres://postgres@localhost:5432/strongbox"),
 		KMSBackend:                 r.str("KMS_BACKEND", "local"),
 		KMSKeyName:                 r.str("KMS_KEY_NAME", ""),
 		LocalKeyringPath:           r.str("LOCAL_KEYRING_PATH", ".strongbox/keyring.json"),
@@ -167,20 +170,26 @@ func FromLookup(lookup func(string) (string, bool)) (*Config, error) {
 	if len(r.errs) > 0 {
 		return nil, fmt.Errorf("invalid configuration: %s", strings.Join(r.errs, "; "))
 	}
+	var deprecated bool
+	if c.DatabaseURL, deprecated = normalizeDBURL(c.DatabaseURL); deprecated {
+		c.Deprecations = append(c.Deprecations, "STRONGBOX_DATABASE_URL uses a driver-qualified scheme "+
+			"(postgresql+psycopg://); use postgres:// instead. Support for the old form will be removed.")
+	}
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-// normalizeDBURL accepts SQLAlchemy-style URLs from the Python era.
-func normalizeDBURL(u string) string {
+// normalizeDBURL accepts the legacy driver-qualified URL form (postgresql+psycopg://) that earlier
+// deployments were configured with. It is deprecated: the second result reports when it was used.
+func normalizeDBURL(u string) (string, bool) {
 	for _, p := range []string{"postgresql+psycopg://", "postgresql+psycopg2://"} {
 		if strings.HasPrefix(u, p) {
-			return "postgresql://" + strings.TrimPrefix(u, p)
+			return "postgresql://" + strings.TrimPrefix(u, p), true
 		}
 	}
-	return u
+	return u, false
 }
 
 func oneOf(v string, allowed ...string) bool {

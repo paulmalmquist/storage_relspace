@@ -41,9 +41,9 @@ flowchart LR
 | API | `net/http`, `application/problem+json` errors, request IDs, `X-Strongbox-Marking` on every CUI response, idempotency keys, ETag/If-Match, OpenAPI contract test |
 | MCP | 11 tools on the official Go MCP SDK; stdio and streamable HTTP with bearer auth and protected-resource metadata |
 | Backends | Postgres (Cloud SQL, AlloyDB, self-hosted Supabase); GCS, any S3-compatible store (incl. Supabase Storage), or local disk for dev |
-| Clients | Go (`pkg/client`) and Python (`clients/python`), both with automatic idempotency keys and retries |
+| Clients | Go (`pkg/client`) with automatic idempotency keys and retries |
 | Infra | Terraform for GCP: HSM keys, CMEK bucket, private Cloud SQL with IAM auth, Cloud Run API + MCP, migration job, audit sinks |
-| Quality | 65 Go test functions on real Postgres (race detector and enforced-FIPS runs in CI), Python client tests against the Go server, `staticcheck`, `govulncheck` |
+| Quality | Go tests on real Postgres, including Go SDK tests against the API (race detector and enforced-FIPS runs in CI), `staticcheck`, `govulncheck` |
 
 ## Quick start (local, not for CUI)
 
@@ -95,15 +95,6 @@ ts, _ := client.GoogleIDToken(ctx, "strongbox-api")
 sb := client.New(apiURL, ts, client.WithServerlessAuth())
 blob, _ := sb.PutBlob(ctx, data, client.BlobOptions{Marking: "CUI//SP-EXPT", Filename: "weld-map.csv"})
 rec, _ := sb.CreateRecord(ctx, "ncr", map[string]any{"part_number": "TR-1042", "status": "open"}, "")
-```
-
-From Python (Spark/Airflow jobs, notebooks): `pip install ./clients/python`
-
-```python
-from strongbox_client import StrongboxClient, GoogleIdTokenSource
-
-async with StrongboxClient(API_URL, GoogleIdTokenSource("strongbox-api"), serverless_auth=True) as sb:
-    blob = await sb.put_blob(csv_bytes, marking="CUI//SP-EXPT", filename="weld-map.csv")
 ```
 
 The API contract is [internal/api/openapi.json](internal/api/openapi.json) (served at `/openapi.json`
@@ -176,7 +167,6 @@ internal/api/          HTTP API + openapi.json contract
 internal/mcpserver/    MCP tools, bearer auth, streamable HTTP
 internal/testenv/      per-test Postgres schema harness
 pkg/client/            Go client
-clients/python/        Python client (+ live tests against the Go server)
 infra/terraform/       GCP deployment
 ```
 

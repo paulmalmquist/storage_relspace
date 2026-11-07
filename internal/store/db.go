@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -37,6 +38,10 @@ func Open(ctx context.Context, url, searchPath string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+// ErrLegacyPythonSchema reports a database created by the retired Python implementation.
+var ErrLegacyPythonSchema = errors.New("database was initialized by the retired Python implementation (schema_info table); " +
+	"it is not migrated automatically - see docs/STORED_FORMATS.md")
+
 // Migrate applies embedded migrations in order, once, under an advisory lock (safe with many replicas).
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	conn, err := pool.Acquire(ctx)
@@ -49,6 +54,16 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	defer conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtext('strongbox.migrate'))`) //nolint:errcheck
 
+	// A database initialized by the retired Python implementation has schema_info and no
+	// schema_migrations. Its tables and blob contexts differ, so refuse instead of failing midway.
+	var pythonEra bool
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('schema_info') IS NOT NULL AND to_regclass('schema_migrations') IS NULL`).
+		Scan(&pythonEra); err != nil {
+		return err
+	}
+	if pythonEra {
+		return ErrLegacyPythonSchema
+	}
 	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
 		return err

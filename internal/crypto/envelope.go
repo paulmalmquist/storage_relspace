@@ -41,7 +41,10 @@ const (
 	maxChunks     = 1<<32 - 1
 )
 
-var magic = []byte("SBX2")
+var (
+	magic       = []byte("SBX2")
+	legacyMagic = []byte("SBX1") // Python-era stream format (deterministic nonces); never read
+)
 
 // NewDataKey returns a fresh 256-bit key from the CSPRNG.
 func NewDataKey() []byte {
@@ -73,6 +76,9 @@ func header(chunk int) []byte {
 }
 
 func parseHeader(h []byte) (int, error) {
+	if len(h) >= 4 && bytes.Equal(h[:4], legacyMagic) {
+		return 0, errs.Integrity("legacy SBX1 ciphertext is not supported (see docs/STORED_FORMATS.md)")
+	}
 	if len(h) != HeaderBytes || !bytes.Equal(h[:4], magic) || h[4] != formatVersion || h[5] != algStream {
 		return 0, errs.Integrity("unrecognized ciphertext format")
 	}
@@ -292,8 +298,11 @@ func Seal(key, plaintext, aad []byte) ([]byte, error) {
 }
 
 func Open(key, sealed, aad []byte) ([]byte, error) {
-	if len(sealed) < 1+ChunkOverhead || sealed[0] != sealVersion {
+	if len(sealed) < 1+ChunkOverhead {
 		return nil, errs.Integrity("malformed sealed value")
+	}
+	if sealed[0] != sealVersion {
+		return nil, errs.Integrity("unknown sealed value format version %d (see docs/STORED_FORMATS.md)", sealed[0])
 	}
 	aead, err := newAEAD(key)
 	if err != nil {

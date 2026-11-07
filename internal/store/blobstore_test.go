@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	"os"
 	"sync"
 	"testing"
 
@@ -176,5 +177,31 @@ func TestS3(t *testing.T) {
 	}
 	if err := w.Abort(); err != nil || len(f.uploads) != 0 {
 		t.Fatalf("abort: %v", errors.Join(err))
+	}
+}
+
+func TestMigrateRefusesPythonEraDatabase(t *testing.T) {
+	url := os.Getenv("STRONGBOX_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("needs STRONGBOX_TEST_DATABASE_URL")
+	}
+	ctx := context.Background()
+	admin, err := Open(ctx, url, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := NewID("t")
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema+"; CREATE TABLE "+schema+".schema_info (key text primary key, value text)"); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE") //nolint:errcheck
+	pool, err := Open(ctx, url, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err := Migrate(ctx, pool); !errors.Is(err, ErrLegacyPythonSchema) {
+		t.Fatalf("expected ErrLegacyPythonSchema, got %v", err)
 	}
 }

@@ -228,3 +228,31 @@ func TestFIPSStatus(t *testing.T) {
 		t.Fatalf("unexpected status %v", s)
 	}
 }
+
+// Stored-format inventory: Python-era SBX1 streams and unknown sealed versions fail with a clear,
+// typed integrity error instead of being guessed at (docs/STORED_FORMATS.md).
+func TestLegacyFormatsFailClearly(t *testing.T) {
+	key := NewDataKey()
+	legacy := append([]byte("SBX1"), make([]byte, 64)...)
+	r, err := NewDecryptingReader(bytes.NewReader(legacy), key, []byte("ctx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.ReadAll(r)
+	if !errs.Is(err, "integrity_violation") || !strings.Contains(err.Error(), "SBX1") {
+		t.Fatalf("SBX1 not rejected clearly: %v", err)
+	}
+	sealed, err := Seal(key, []byte("x"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed[0] = 9
+	if _, err := Open(key, sealed, nil); !errs.Is(err, "integrity_violation") || !strings.Contains(err.Error(), "version 9") {
+		t.Fatalf("unknown sealed version not rejected clearly: %v", err)
+	}
+	other := append([]byte("ZZZZ"), make([]byte, 64)...)
+	r, _ = NewDecryptingReader(bytes.NewReader(other), key, []byte("ctx"))
+	if _, err := io.ReadAll(r); !errs.Is(err, "integrity_violation") || !strings.Contains(err.Error(), "unrecognized") {
+		t.Fatalf("unknown stream format not rejected clearly: %v", err)
+	}
+}

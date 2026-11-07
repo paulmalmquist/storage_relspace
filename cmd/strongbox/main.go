@@ -103,6 +103,9 @@ func load() (*config.Config, error) {
 		return nil, err
 	}
 	setupLogging(cfg.LogLevel)
+	for _, d := range cfg.Deprecations {
+		slog.Warn("deprecated configuration", "detail", d)
+	}
 	return cfg, nil
 }
 

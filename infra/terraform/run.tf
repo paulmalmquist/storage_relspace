@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------------------------
 # API: internal ingress, Cloud Run IAM in front, app-level OIDC verification behind it.
 # Callers send the same Google ID token in X-Serverless-Authorization (Cloud Run IAM) and
-# Authorization (Strongbox); the Python client does this automatically.
+# Authorization (Strongbox); the Go SDK does this with client.WithServerlessAuth().
 # ---------------------------------------------------------------------------------------------
 resource "google_cloud_run_v2_service" "api" {
   name             = "${var.name}-api"
