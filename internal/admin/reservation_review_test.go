@@ -44,6 +44,9 @@ func TestUsageRepairLocksBeforeTakingItsSnapshot(t *testing.T) {
 	if _, err := e.C.Records.Create(ctx, user, "notes", service.RecordInput{Data: map[string]any{"x": 1}}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := e.C.Blobs.Put(ctx, user, []byte("old data"), service.BlobInput{Marking: markings.None()}); err != nil {
+		t.Fatal(err)
+	}
 	e.Admin(t, `UPDATE blob_usage SET blobs=blobs+1 WHERE app=$1`, testenv.App)
 	// Pause the record recount, which follows the blob recount in AppUsage.
 	e.Admin(t, `CREATE OR REPLACE FUNCTION sb_record_bytes(r records) RETURNS bigint LANGUAGE plpgsql VOLATILE AS $$
@@ -109,7 +112,7 @@ func TestUsageRepairLocksBeforeTakingItsSnapshot(t *testing.T) {
 		}
 	}
 	usage, err := a.AppUsage(call, testenv.App, true, false)
-	if err != nil || usage.Drift || usage.Blobs != 1 || usage.BlobBytes != 8 {
+	if err != nil || usage.Drift || usage.Blobs != 2 || usage.BlobBytes != 16 {
 		t.Fatalf("repair wrote stale totals after a concurrent upload: %+v %v", usage, err)
 	}
 }
