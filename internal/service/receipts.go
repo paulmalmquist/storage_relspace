@@ -11,7 +11,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/paulmalmquist/storage_relspace/internal/auth"
 	"github.com/paulmalmquist/storage_relspace/internal/errs"
+	"github.com/paulmalmquist/storage_relspace/internal/markings"
 	"github.com/paulmalmquist/storage_relspace/internal/telemetry"
 )
 
@@ -138,6 +140,9 @@ func (r *receipts) claim(ctx context.Context, tx pgx.Tx, c Ctx, op Operation, le
 		rc.ResourceVersion = *resVersion
 	}
 	if status == "succeeded" {
+		if err := r.authorize(ctx, tx, c, rc); err != nil {
+			return nil, err
+		}
 		telemetry.Replays.Add(ctx, 1, telemetry.Code(op.Type))
 		return rc, nil
 	}
@@ -208,8 +213,53 @@ func (r *receipts) Get(ctx context.Context, c Ctx, opID string) (*Receipt, error
 		if resVersion != nil {
 			rc.ResourceVersion = *resVersion
 		}
+		if err != nil {
+			return err
+		}
+		if err := r.authorize(ctx, tx, c, rc); err != nil {
+			return err
+		}
 		out = rc
-		return err
+		return nil
 	})
 	return out, err
+}
+
+// authorize applies current resource visibility and classification to every receipt
+// read, including status-only reads and delete retries. A receipt is not an access grant.
+func (r *receipts) authorize(ctx context.Context, tx pgx.Tx, c Ctx, rc *Receipt) error {
+	if rc.ResourceID == "" {
+		return nil // a pending operation has not assigned a resource yet
+	}
+	var banner string
+	var restricted, manages bool
+	var err error
+	action := auth.RecordRead
+	switch rc.ResourceType {
+	case "record":
+		err = tx.QueryRow(ctx, `SELECT marking, deleted_at IS NOT NULL, sb_can_manage(owner, visibility, team_id)
+			FROM records WHERE app=$1 AND id=$2`, c.App, rc.ResourceID).Scan(&banner, &restricted, &manages)
+	case "blob":
+		action = auth.BlobReadMeta
+		err = tx.QueryRow(ctx, `SELECT marking, state <> 'active',
+			CASE WHEN state='pending' THEN owner=sb_ctx_subject() ELSE sb_can_manage(owner, visibility, team_id) END
+			FROM blobs WHERE app=$1 AND id=$2`, c.App, rc.ResourceID).Scan(&banner, &restricted, &manages)
+	case "collection":
+		action = auth.CollectionRead
+		err = tx.QueryRow(ctx, `SELECT marking FROM collections WHERE app=$1 AND name=$2`, c.App, rc.ResourceID).Scan(&banner)
+	default:
+		return errs.NotFound("operation not found")
+	}
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && restricted && !manages {
+		return errs.NotFound("operation not found")
+	}
+	if err != nil {
+		return err
+	}
+	m, err := markings.Parse(banner)
+	if err != nil {
+		return errs.Integrity("stored marking is invalid")
+	}
+	_, err = r.core.check(ctx, tx, c, action, rc.ResourceType, rc.ResourceID, &m, checkOpts{skipAllow: true})
+	return err
 }
