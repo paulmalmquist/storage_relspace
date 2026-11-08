@@ -139,8 +139,7 @@ they do not attest deployed IAM, retention or cloud restore performance.
 ## Validation evidence
 
 Both full integration runs pass with the race detector: **194 top-level Go tests, 203 including
-subtests**, in enforced FIPS mode and with the frozen `GOFIPS140=v1.0.0` module. All nine live
-TypeScript tests, generated types, type checking and the example pass. No integration tests were skipped.
+subtests**, in enforced FIPS mode and with the frozen `GOFIPS140=v1.0.0` module. All nine TypeScript tests (three live HTTP contracts and six unit tests), generated types, type checking and the example pass. No integration tests were skipped.
 
 [Summary](evidence/recovery/validation.json), [every Go result](evidence/recovery/go-tests.tsv),
 [two measured synthetic drills](evidence/recovery/drill-reports.json),

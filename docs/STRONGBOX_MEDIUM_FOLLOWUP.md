@@ -37,7 +37,7 @@ project was accessed.
 
 - `STRONGBOX_TEST_DATABASE_URL=… STRONGBOX_REQUIRE_INTEGRATION=1 GODEBUG=fips140=only go test -race -count=1 ./...`: 173 top-level tests, 175 including subtests; zero skipped tests or failures.
 - The same full suite with `GOFIPS140=v1.0.0`: identical pass count.
-- TypeScript generated types match OpenAPI; typecheck passes. All nine tests pass against the throwaway server, and the demo completes.
+- TypeScript generated types match OpenAPI; typecheck passes. All nine tests pass, including three HTTP contracts against the throwaway server and six unit tests. The demo completes.
 - Go vet and staticcheck pass. Govulncheck reports no affected callable symbols; it identifies one advisory in a required module whose vulnerable code is not called.
 - The synthetic four-user load smoke preserves private saves, the shared counter, blob contents and create counts. A quiet app continues making progress beside a busy app. Three-second workloads and local keys/storage do not measure production capacity.
 

@@ -67,7 +67,7 @@ its existing tools; this change adds no destructive agent tools or management ri
 
 The full integration suite passes with race detection in enforced FIPS mode and again with the
 frozen v1.0.0 module: **207 top-level tests, 216 including subtests**, no skipped integration tests.
-All **ten** live TypeScript tests, generated types, type checking and the example pass. Vet and
+All **ten** TypeScript tests (four live HTTP contracts and six unit tests), generated types, type checking and the example pass. Vet and
 staticcheck pass. Local/fake providers were used; no cloud project or deployment was accessed.
 
 Tests cover all-or-nothing rollback for stale versions, uniqueness, quotas, pending schemas and

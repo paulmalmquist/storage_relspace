@@ -24,11 +24,16 @@
   },
   "typescript": {
     "passed": 11,
-    "skipped": 0
+    "skipped": 0,
+    "live_http": 5,
+    "unit": 6
   },
   "dreamcatcher": {
     "passed": 10,
-    "skipped": 0
+    "skipped": 0,
+    "end_to_end_scenarios": 7,
+    "identity_checks": 2,
+    "parent_suite": 1
   },
   "source_intake": "two actual HTTP 201 submissions queued in a disposable reference registry",
   "runtime": "release and query gates from the reference server; synthetic warehouse provider and local worker doubles",
