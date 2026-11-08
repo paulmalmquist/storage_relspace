@@ -74,6 +74,27 @@ func TestUsageRepairLocksBeforeTakingItsSnapshot(t *testing.T) {
 	waitFor(t, call, e.Migrator, `SELECT EXISTS(SELECT 1 FROM pg_locks blocked JOIN pg_locks held
   ON held.locktype=blocked.locktype AND held.classid=blocked.classid AND held.objid=blocked.objid
   WHERE held.pid=$1 AND held.granted AND NOT blocked.granted)`, holder)
+	var repairPID int
+	if err := e.Migrator.QueryRow(call, `SELECT blocked.pid FROM pg_locks blocked JOIN pg_locks held
+        ON held.locktype=blocked.locktype AND held.classid=blocked.classid AND held.objid=blocked.objid
+        WHERE held.pid=$1 AND held.granted AND NOT blocked.granted LIMIT 1`, holder).Scan(&repairPID); err != nil {
+		t.Fatal(err)
+	}
+	// A repair for this app must leave other apps free to save.
+	quiet := make(chan error, 1)
+	other := e.CtxIn(t, testenv.Other, "outsider@rel.test")
+	go func() {
+		_, err := e.C.Blobs.Put(call, other, []byte("quiet app"), service.BlobInput{Marking: markings.None()})
+		quiet <- err
+	}()
+	select {
+	case err := <-quiet:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("one app's usage repair blocked another app")
+	}
 	uploadDone := make(chan error, 1)
 	go func() {
 		_, err := e.C.Blobs.Put(call, user, []byte("new data"), service.BlobInput{Marking: markings.None()})
@@ -92,7 +113,7 @@ func TestUsageRepairLocksBeforeTakingItsSnapshot(t *testing.T) {
 		default:
 		}
 		var blocked bool
-		if err := e.Migrator.QueryRow(call, `SELECT EXISTS(SELECT 1 FROM pg_locks WHERE relation=$1::regclass AND mode='RowExclusiveLock' AND NOT granted)`, e.Schema+".blobs").Scan(&blocked); err != nil {
+		if err := e.Migrator.QueryRow(call, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))`, repairPID).Scan(&blocked); err != nil {
 			t.Fatal(err)
 		}
 		if uploadFinished || blocked {

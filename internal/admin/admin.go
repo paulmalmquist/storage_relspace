@@ -417,10 +417,21 @@ type Usage struct {
 func (a *Admin) AppUsage(ctx context.Context, app string, recount, fix bool) (*Usage, error) {
 	u := &Usage{App: app}
 	err := a.tx(ctx, app, func(tx pgx.Tx) error {
-		// The scan must follow the lock; otherwise a concurrent committed upload
-		// can make a repair write stale blob totals back into the counters.
+		// Writers apply their deltas to these same per-app rows in their transaction.
+		// Lock all shards before scanning, including previously empty shards. Other apps
+		// keep writing; no application table needs a global SHARE lock.
 		if fix {
-			if _, err := tx.Exec(ctx, `LOCK TABLE records,blobs IN SHARE MODE`); err != nil {
+			if _, err := tx.Exec(ctx, `INSERT INTO blob_usage(app) VALUES($1) ON CONFLICT DO NOTHING`, app); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `SELECT app FROM blob_usage WHERE app=$1 FOR UPDATE`, app); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO record_usage(app,shard,records,bytes)
+                SELECT $1,shard,0,0 FROM generate_series(0,7) shard ON CONFLICT DO NOTHING`, app); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `SELECT shard FROM record_usage WHERE app=$1 ORDER BY shard FOR UPDATE`, app); err != nil {
 				return err
 			}
 		}
@@ -472,14 +483,15 @@ func (a *Admin) AppUsage(ctx context.Context, app string, recount, fix bool) (*U
 			return nil
 		}
 		// Rewrite from the scan made while writers were stopped.
-		if _, err := tx.Exec(ctx, `DELETE FROM record_usage WHERE app = $1`, app); err != nil {
+		if _, err := tx.Exec(ctx, `WITH actual AS (
+            SELECT sb_usage_shard(id) shard,count(*) n,sum(sb_record_bytes(records)) bytes
+            FROM records WHERE app=$1 AND deleted_at IS NULL GROUP BY 1)
+            UPDATE record_usage u SET records=coalesce(s.n,0),bytes=coalesce(s.bytes,0)
+            FROM (SELECT shards.shard,a.n,a.bytes FROM generate_series(0,7) AS shards(shard)
+                LEFT JOIN actual a USING(shard)) s WHERE u.app=$1 AND u.shard=s.shard`, app); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO record_usage (app, shard, records, bytes)
-			SELECT app, sb_usage_shard(id), count(*), sum(sb_record_bytes(records)) FROM records
-			WHERE app = $1 AND deleted_at IS NULL GROUP BY 1, 2`, app); err != nil {
-			return err
-		}
+
 		if _, err := tx.Exec(ctx, `UPDATE blob_usage SET bytes = $2, blobs = $3,
 			reserved_bytes = (SELECT coalesce(sum(reserved_bytes),0) FROM blobs WHERE app = $1 AND state = 'pending'),
 			reservations = (SELECT count(*) FROM blobs WHERE app = $1 AND state = 'pending') WHERE app = $1`,
