@@ -1,0 +1,50 @@
+{
+  "readiness-notes": {
+    "title": "Readiness notebook",
+    "category": "Manufacturing",
+    "visibility": "private",
+    "collection": "readiness_notes",
+    "query": "bq-build-readiness@1.0.0",
+    "key": "assembly_id",
+    "label": "system_name",
+    "metric": "readiness_pct",
+    "unit": "% ready",
+    "noun": "Assembly",
+    "plural": "Assemblies",
+    "entry": "note",
+    "statuses": [
+      "Watching",
+      "Ready",
+      "Blocked"
+    ],
+    "files": false,
+    "programs": [
+      "program-a",
+      "program-b"
+    ]
+  },
+  "supplier-evidence": {
+    "title": "Supplier follow-ups",
+    "category": "Supply chain",
+    "visibility": "app",
+    "collection": "supplier_evidence",
+    "query": "bq-supplier-delivery@1.0.0",
+    "key": "po_line_id",
+    "label": "supplier_alias",
+    "metric": "days_late",
+    "unit": " days late",
+    "noun": "PO line",
+    "plural": "PO lines",
+    "entry": "follow-up",
+    "statuses": [
+      "Open",
+      "Waiting",
+      "Resolved"
+    ],
+    "files": true,
+    "programs": [
+      "program-a",
+      "program-b"
+    ]
+  }
+}

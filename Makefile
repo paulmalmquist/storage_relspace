@@ -43,3 +43,10 @@ mcp: build
 
 docker:
 	docker build -t strongbox:dev .
+
+.PHONY: dreamcatcher-bundles dreamcatcher-demo
+dreamcatcher-bundles:
+	go run ./examples/dreamcatcher/pack -out examples/dreamcatcher/uploads
+
+dreamcatcher-demo:
+	docker compose -f examples/dreamcatcher/compose.yaml up --build

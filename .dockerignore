@@ -7,3 +7,6 @@ clients
 docs
 infra
 **/*_test.go
+
+.strongbox-dreamcatcher
+dist

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Dreamcatcher workspace</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header>
+      <div class="brand">Dreamcatcher</div>
+      <span id="category"></span>
+    </header>
+    <main>
+      <div class="mast">
+        <h1 id="title">Loading workspace…</h1>
+        <label>Program<select id="program"></select></label>
+      </div>
+      <div class="layout">
+        <section class="panel">
+          <h2 id="plural">Query results</h2>
+          <div id="rows"></div>
+        </section>
+        <section class="panel">
+          <div class="section-head">
+            <h2 id="selected">Select a row</h2>
+            <span id="scope"></span>
+          </div>
+          <form id="editor" hidden>
+            <label id="note-label" for="note">Note</label
+            ><textarea id="note" rows="3" maxlength="1500" required></textarea>
+            <div class="controls">
+              <label>Status<select id="status"></select></label
+              ><label id="file-label" hidden
+                >Evidence file · up to 32 KiB<input type="file" id="file"
+              /></label>
+            </div>
+            <div class="actions">
+              <button id="save">Save</button
+              ><button id="cancel" class="secondary" type="button" hidden>Cancel edit</button>
+            </div>
+          </form>
+          <div id="entries"></div>
+          <button id="more" class="secondary" hidden>Load more</button>
+        </section>
+      </div>
+      <p id="feedback" role="status" aria-live="polite"></p>
+    </main>
+  </body>
+</html>

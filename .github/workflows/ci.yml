@@ -80,6 +80,11 @@ jobs:
           . ./.live.env
           npm test
           npm run example
+      - name: Dreamcatcher app saves and restart against PostgreSQL
+        working-directory: .
+        env:
+          PG_ADMIN_URL: postgres://postgres:strongbox@127.0.0.1:5432/postgres?sslmode=disable
+        run: bash examples/dreamcatcher/lab/native.sh --test
 
   terraform:
     runs-on: ubuntu-latest

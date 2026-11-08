@@ -11,3 +11,5 @@ clients/typescript/dist/
 *.tfvars
 !*.tfvars.example
 keyring.json
+.strongbox-dreamcatcher/
+/dist/dreamcatcher/
