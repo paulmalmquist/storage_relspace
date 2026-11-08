@@ -115,14 +115,17 @@ type Source struct {
 
 func identity(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}) Source {
+}) (Source, error) {
 	var s Source
-	_ = q.QueryRow(ctx, `SELECT current_database(), current_schema()`).Scan(&s.Database, &s.Schema)
-	var id int64
-	if err := q.QueryRow(ctx, `SELECT system_identifier FROM pg_control_system()`).Scan(&id); err == nil {
-		s.SystemIdentifier = fmt.Sprint(id)
+	if err := q.QueryRow(ctx, `SELECT current_database(), current_schema()`).Scan(&s.Database, &s.Schema); err != nil {
+		return s, err
 	}
-	return s
+	var id int64
+	if err := q.QueryRow(ctx, `SELECT system_identifier FROM pg_control_system()`).Scan(&id); err != nil {
+		return s, fmt.Errorf("database identity unavailable: %w", err)
+	}
+	s.SystemIdentifier = fmt.Sprint(id)
+	return s, nil
 }
 
 // ownerTx runs fn in one transaction as strongbox_owner. Read-only exports use REPEATABLE READ, so
@@ -184,7 +187,11 @@ func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app,
 	m := &Manifest{Format: Format, FormatVersion: FormatVersion, App: app, CreatedAt: time.Now().UTC(), CreatedBy: actor, Build: build,
 		Notes: "Ciphertext only. Readable with access to the KMS keys listed in kek_ids and only under this app's identity."}
 	var objects []ObjectEntry
-	err := ownerTx(ctx, pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	source, err := identity(ctx, pool)
+	if err != nil {
+		return nil, err
+	}
+	err = ownerTx(ctx, pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM apps WHERE app = $1)`, app).Scan(&exists); err != nil {
 			return err
@@ -195,7 +202,17 @@ func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app,
 		if err := tx.QueryRow(ctx, `SELECT coalesce(max(version), 0) FROM schema_migrations`).Scan(&m.SchemaVersion); err != nil {
 			return err
 		}
-		m.Source = identity(ctx, tx)
+		m.Source = source
+		// Format 1 preserves database ciphertext; it cannot safely export plaintext collections.
+		// Refuse before creating any files, including plaintext historical/index values.
+		var plain bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM records WHERE app=$1 AND data_plain IS NOT NULL)
+            OR EXISTS(SELECT 1 FROM record_revisions WHERE app=$1 AND data_plain IS NOT NULL)`, app).Scan(&plain); err != nil {
+			return err
+		}
+		if plain {
+			return errors.New("format 1 export refuses plaintext record data; use encrypted collections")
+		}
 		for _, t := range tables {
 			q := `SELECT to_jsonb(t) FROM ` + t.name + ` t WHERE ` + t.where
 			if t.order != "" {
@@ -232,19 +249,24 @@ func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app,
 			m.Tables = append(m.Tables, TableEntry{Name: t.name, File: file, Rows: out.rows, SHA256: out.sum()})
 		}
 		// Objects of every blob that still has them: single objects and parts.
-		rows, err := tx.Query(ctx, `SELECT storage_key FROM blobs WHERE app = $1 AND layout = 'single' AND state IN ('active', 'deleted', 'shredded')
-			UNION ALL SELECT p.storage_key FROM blob_parts p JOIN blobs b ON b.app = p.app AND b.id = p.blob_id
-			WHERE p.app = $1 AND b.state IN ('active', 'deleted', 'shredded') ORDER BY 1`, app)
+		rows, err := tx.Query(ctx, `SELECT storage_key,state='active' AS required FROM blobs WHERE app = $1 AND layout = 'single' AND state IN ('active', 'deleted', 'shredded')
+			UNION ALL SELECT p.storage_key,b.state IN ('active','pending') FROM blob_parts p JOIN blobs b ON b.app = p.app AND b.id = p.blob_id
+			WHERE p.app = $1 AND b.state IN ('pending', 'active', 'deleted', 'shredded') ORDER BY 1`, app)
 		if err != nil {
 			return err
 		}
-		keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		type objectRef struct {
+			key      string
+			required bool
+		}
+		keys, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (objectRef, error) { var o objectRef; return o, r.Scan(&o.key, &o.required) })
 		if err != nil {
 			return err
 		}
-		for _, key := range keys {
+		for _, ref := range keys {
+			key := ref.key
 			o, err := copyOut(ctx, backend, key, dir)
-			if errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, os.ErrNotExist) && !ref.required {
 				continue // deleted or shredded and already purged from the store
 			}
 			if err != nil {
@@ -502,27 +524,39 @@ func Validate(dir string) (*Manifest, *Report, error) {
 	if err != nil {
 		return m, rep, err
 	}
+	if rep.Objects != m.Objects.Count || rep.Bytes != m.Objects.Bytes {
+		rep.addf("object inventory count/bytes do not match manifest")
+	}
 	// Cross-check blob rows against objects.
-	parts := map[string][]struct{ key, digest string }{}
-	_ = eachLine(filepath.Join(dir, "tables/blob_parts.ndjson"), func(b []byte) error {
-		var p struct {
-			BlobID string `json:"blob_id"`
-			Key    string `json:"storage_key"`
-			SHA    string `json:"ciphertext_sha256"`
+	type part struct {
+		BlobID      string `json:"blob_id"`
+		Key         string `json:"storage_key"`
+		SHA         string `json:"ciphertext_sha256"`
+		Number      int    `json:"part_number"`
+		Size        int64  `json:"size_bytes"`
+		CipherBytes int64  `json:"cipher_bytes"`
+	}
+	parts := map[string][]part{}
+	if err := eachLine(filepath.Join(dir, "tables/blob_parts.ndjson"), func(b []byte) error {
+		var p part
+		if err := json.Unmarshal(b, &p); err != nil {
+			return err
 		}
-		if json.Unmarshal(b, &p) == nil {
-			parts[p.BlobID] = append(parts[p.BlobID], struct{ key, digest string }{p.Key, p.SHA})
-		}
+		parts[p.BlobID] = append(parts[p.BlobID], p)
 		return nil
-	})
+	}); err != nil {
+		return m, rep, err
+	}
 	err = eachLine(filepath.Join(dir, "tables/blobs.ndjson"), func(b []byte) error {
 		var bl struct {
-			ID     string  `json:"id"`
-			App    string  `json:"app"`
-			State  string  `json:"state"`
-			Layout string  `json:"layout"`
-			Key    string  `json:"storage_key"`
-			SHA    *string `json:"ciphertext_sha256"`
+			ID       string  `json:"id"`
+			App      string  `json:"app"`
+			State    string  `json:"state"`
+			Layout   string  `json:"layout"`
+			Key      string  `json:"storage_key"`
+			SHA      *string `json:"ciphertext_sha256"`
+			Declared int64   `json:"declared_size"`
+			PartSize int64   `json:"part_size"`
 		}
 		if err := json.Unmarshal(b, &bl); err != nil {
 			return err
@@ -530,17 +564,49 @@ func Validate(dir string) (*Manifest, *Report, error) {
 		if bl.App != m.App {
 			rep.addf("blob %s belongs to %s, not %s", bl.ID, bl.App, m.App)
 		}
-		if bl.State != "active" {
+		if bl.State != "active" && bl.State != "pending" {
 			return nil
 		}
 		if bl.Layout == "parts" {
-			for _, p := range parts[bl.ID] {
-				if o, ok := objects[p.key]; !ok || o.SHA256 != p.digest {
-					rep.addf("blob %s: part %s missing or does not match its digest", bl.ID, p.key)
+			if bl.PartSize <= 0 || bl.Declared < 0 {
+				rep.addf("blob %s: invalid multipart size", bl.ID)
+				return nil
+			}
+			count := max(int64(1), (bl.Declared+bl.PartSize-1)/bl.PartSize)
+			pp := parts[bl.ID]
+			slices.SortFunc(pp, func(a, b part) int { return a.Number - b.Number })
+			if bl.State == "active" && int64(len(pp)) != count {
+				rep.addf("blob %s: incomplete part list", bl.ID)
+			}
+			aggregate := sha256.New()
+			seen := map[int]bool{}
+			for i, p := range pp {
+				want := bl.PartSize
+				if int64(p.Number) == count {
+					want = bl.Declared - int64(p.Number-1)*bl.PartSize
 				}
+				if p.Number < 1 || int64(p.Number) > count || seen[p.Number] || p.Size != want || bl.State == "active" && p.Number != i+1 {
+					rep.addf("blob %s: invalid part number or size", bl.ID)
+				}
+				seen[p.Number] = true
+				digest, e := hex.DecodeString(p.SHA)
+				if e != nil || len(digest) != sha256.Size {
+					rep.addf("blob %s: invalid part digest", bl.ID)
+				}
+				aggregate.Write(digest)
+				if o, ok := objects[p.Key]; !ok || o.SHA256 != p.SHA || o.Bytes != p.CipherBytes {
+					rep.addf("blob %s: part %s missing or does not match its digest/size", bl.ID, p.Key)
+				}
+			}
+			if bl.State == "active" && (bl.SHA == nil || hex.EncodeToString(aggregate.Sum(nil)) != *bl.SHA) {
+				rep.addf("blob %s: part-list digest mismatch", bl.ID)
 			}
 			return nil
 		}
+		if bl.State == "pending" {
+			return nil
+		}
+
 		if o, ok := objects[bl.Key]; !ok || bl.SHA == nil || o.SHA256 != *bl.SHA {
 			rep.addf("blob %s: object missing or does not match its digest", bl.ID)
 		}
@@ -586,7 +652,14 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, dir
 	if m.SchemaVersion > applied {
 		return nil, fmt.Errorf("export is from schema version %d, newer than this target (%d)", m.SchemaVersion, applied)
 	}
-	if target := identity(ctx, pool); target == m.Source {
+	target, err := identity(ctx, pool)
+	if err != nil {
+		return nil, err
+	}
+	if m.Source.SystemIdentifier == "" || m.Source.Database == "" {
+		return nil, errors.New("export has no stable source database identity")
+	}
+	if target.SystemIdentifier == m.Source.SystemIdentifier && target.Database == m.Source.Database {
 		return nil, errors.New("the target is the export's source database; restore only into a separate database")
 	}
 

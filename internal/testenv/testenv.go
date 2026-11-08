@@ -76,7 +76,15 @@ func Empty(t testing.TB, keyring string) *Env {
 }
 
 func build(t testing.TB, keyring string, seed bool) *Env {
-	db := pgtest.NewDB(t)
+	return buildDB(t, keyring, seed, pgtest.NewDB(t))
+}
+
+func EmptyDatabase(t testing.TB, keyring string) *Env {
+	t.Helper()
+	return buildDB(t, keyring, false, pgtest.SeparateDatabase(t))
+}
+
+func buildDB(t testing.TB, keyring string, seed bool, db *pgtest.DB) *Env {
 	ctx := context.Background()
 	dir := t.TempDir()
 	if keyring == "" {

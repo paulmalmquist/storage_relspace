@@ -77,7 +77,7 @@ func TestReviewRestoreRejectsForeignAppRows(t *testing.T) {
 	reviewRewriteTable(t, dir, "app_members", func(raw []byte) []byte {
 		return append(raw, []byte(`{"app":"rival:test","subject":"engineer@rel.test","role":"admin","added_by":"review","created_at":"2026-11-07T00:00:00Z"}`+"\n")...)
 	})
-	dst := testenv.Empty(t, src.Keyring)
+	dst := testenv.EmptyDatabase(t, src.Keyring)
 	dst.Admin(t, `INSERT INTO apps (app, created_by) VALUES ($1, 'existing-operator')`, testenv.Other)
 	_, err := backup.Restore(ctx, dst.Migrator, dst.C.Backend, dir, false)
 	if err == nil {

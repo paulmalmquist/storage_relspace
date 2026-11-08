@@ -1,5 +1,3 @@
-//go:build strongbox_review_repro
-
 package backup_test
 
 import (
@@ -7,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/paulmalmquist/storage_relspace/internal/backup"
@@ -25,7 +24,17 @@ func TestReviewExportContainsNoPlaintextRecordData(t *testing.T) {
 	if _, err := src.C.Records.Create(ctx, user, "plain", service.RecordInput{Data: map[string]any{"tag": marker}}); err != nil {
 		t.Fatal(err)
 	}
-	dir := reviewExport(t, src)
+	dir := t.TempDir()
+	if _, err := backup.Export(ctx, src.Migrator, src.C.Backend, testenv.App, dir, "review", "test"); err != nil {
+		if !strings.Contains(err.Error(), "refuses plaintext") {
+			t.Fatal(err)
+		}
+		entries, _ := os.ReadDir(dir)
+		if len(entries) != 0 {
+			t.Fatal("refused plaintext export wrote files")
+		}
+		return
+	}
 	for _, name := range []string{"records", "record_revisions", "record_index"} {
 		raw, err := os.ReadFile(filepath.Join(dir, "tables", name+".ndjson"))
 		if err != nil {
@@ -92,7 +101,7 @@ func TestReviewPendingSessionRestoreKeepsAcknowledgedParts(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := reviewExport(t, src)
-	dst := testenv.Empty(t, src.Keyring)
+	dst := testenv.EmptyDatabase(t, src.Keyring)
 	if _, err := backup.Restore(ctx, dst.Migrator, dst.C.Backend, dir, false); err != nil {
 		t.Fatal(err)
 	}

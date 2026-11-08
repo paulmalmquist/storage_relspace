@@ -48,7 +48,11 @@ var bootstrapOnce sync.Once
 // NewDB creates a fresh schema, migrates it and connects the restricted runtime login to it.
 func NewDB(t testing.TB) *DB {
 	t.Helper()
-	adminURL := DatabaseURL(t)
+	return NewDBAt(t, DatabaseURL(t))
+}
+
+func NewDBAt(t testing.TB, adminURL string) *DB {
+	t.Helper()
 	ctx := context.Background()
 	admin, err := store.Open(ctx, adminURL, store.Options{})
 	if err != nil {
@@ -112,4 +116,24 @@ func bootstrapRoles(ctx context.Context, admin *pgxpool.Pool) error {
 		return err
 	}
 	return store.Bootstrap(ctx, admin, store.BootstrapOptions{Schema: "public", RuntimeLogins: []string{RuntimeLogin}})
+}
+
+// SeparateDatabase creates a real database for source/target recovery isolation tests.
+func SeparateDatabase(t testing.TB) *DB {
+	t.Helper()
+	u, err := url.Parse(DatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := store.Open(context.Background(), u.String(), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := store.NewID("recovery")
+	if _, err := admin.Exec(context.Background(), "CREATE DATABASE "+name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = admin.Exec(context.Background(), "DROP DATABASE "+name+" WITH (FORCE)"); admin.Close() })
+	u.Path = "/" + name
+	return NewDBAt(t, u.String())
 }

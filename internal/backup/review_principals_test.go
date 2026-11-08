@@ -12,7 +12,7 @@ import (
 func TestReviewSharedRestoreCannotImportPlatformAdministrator(t *testing.T) {
 	src, ctx := testenv.New(t), context.Background()
 	dir := reviewExport(t, src)
-	dst := testenv.Empty(t, src.Keyring)
+	dst := testenv.EmptyDatabase(t, src.Keyring)
 	if err := dst.C.Principals.Put(ctx, auth.Spec{Subject: "target-operator@rel.test", Kind: auth.KindUser, Scopes: []string{"*"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestReviewSharedRestoreCannotImportPlatformAdministrator(t *testing.T) {
 func TestReviewSharedRestorePreservesTargetPrincipalPolicy(t *testing.T) {
 	src, ctx := testenv.New(t), context.Background()
 	dir := reviewExport(t, src)
-	dst := testenv.Empty(t, src.Keyring)
+	dst := testenv.EmptyDatabase(t, src.Keyring)
 	for _, spec := range testenv.Principals {
 		spec.Scopes = []string{"records:read"}
 		if err := dst.C.Principals.Put(ctx, spec); err != nil {

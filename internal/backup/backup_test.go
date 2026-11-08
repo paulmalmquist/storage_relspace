@@ -99,7 +99,7 @@ func TestExportValidateRestore(t *testing.T) {
 		t.Fatalf("validate: %v %+v", err, rep)
 	}
 
-	dst := testenv.Empty(t, src.Keyring)
+	dst := testenv.EmptyDatabase(t, src.Keyring)
 	// Restoring into the source itself is refused.
 	if _, err := backup.Restore(ctx, src.Migrator, src.C.Backend, dir, true); err == nil {
 		t.Fatal("restore into the source database was accepted")
@@ -197,7 +197,7 @@ func TestValidateDetectsTampering(t *testing.T) {
 	if !strings.Contains(joined, "app_members.ndjson: digest mismatch") || !strings.Contains(joined, "size or digest mismatch") {
 		t.Fatalf("problems: %s", joined)
 	}
-	dst := testenv.Empty(t, src.Keyring)
+	dst := testenv.EmptyDatabase(t, src.Keyring)
 	if _, err := backup.Restore(ctx, dst.Migrator, dst.C.Backend, dir, false); err == nil {
 		t.Fatal("a tampered export was restored")
 	}
