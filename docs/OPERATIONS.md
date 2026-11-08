@@ -164,34 +164,34 @@ strongbox export -app notes:prod -out /secure/notes-2026-11-07
 strongbox validate-export -in /secure/notes-2026-11-07   # offline: digests, row counts, every blob's objects
 ```
 
-An export (format version 1, see `internal/backup`) holds one app's rows, read from one database
-snapshot, and its encrypted objects, with SHA-256 digests in `manifest.json`. Format 1 refuses
-exports containing plaintext record payloads or revisions before creating files. Use encrypted
-collections for recoverable application data; sealed export of plaintext collections needs a new
-format and is not implemented. Membership, schemas and audit metadata remain readable. Current
-ciphertexts bind the app; assigned legacy ciphertexts retain their older contexts. Protect the
-entire export according to its data classification.
-
-Restore runs with the **target's** configuration (database, bucket, KMS):
+CLI export writes **format 2**: one SQL snapshot, encrypted table streams (including plaintext
+collections), existing encrypted objects, and a versioned authenticated manifest. It preserves
+operation receipts and unfinished outbox work. Manifest/inventory metadata remains readable.
 
 ```bash
-strongbox init                                       # target at the build's schema version
-strongbox restore -in /secure/notes-2026-11-07 -dry-run   # every row inserted and checked, then rolled back
-strongbox restore -in /secure/notes-2026-11-07 -deep      # restore, then decrypt everything and verify chains and usage
+strongbox export -app notes:prod -out /secure/notes-export
+strongbox validate-export -in /secure/notes-export                  # offline digest checks
+strongbox validate-export -in /secure/notes-export -authenticate    # keys, no database
+# With independently configured target database AND object storage:
+strongbox init
+strongbox restore -in /secure/notes-export -dry-run
+strongbox restore -in /secure/notes-export -deep
+# Or restore and measure all validation phases on a fresh target:
+strongbox restore-drill -in /secure/notes-export
 ```
 
-Restore refuses the source cluster/database regardless of schema, one that already has the
-app, and one at an older schema than the export. It validates the export first and refuses a
-mismatch. Objects are copied before rows are committed; a copy failure rolls back the rows and can leave
-unreferenced objects in the target. Row scopes, canonical manifest paths and
-object prefixes are checked before writing. In a populated target, every source principal must
-already be provisioned by the target operator; existing policy is preserved. A genuinely empty
-target can recover the source principals. Export includes acknowledged parts of pending sessions.
-Offline validation checks part count, ordering, sizes, inventory and aggregate digests; deep
-verification uses the same part-list check as normal reads, authenticates the stream and checks
-its total size. Export/restore require permission to read `pg_control_system()` for stable cluster
-identity and fail closed if it is unavailable; this permission belongs to the recovery operator,
-not the API login.
+Restore refuses the source cluster/database regardless of schema, an existing target app,
+and overlapping declared source/target object namespaces. It authenticates and checks all rows
+before target effects. Dry run writes no objects. Format-1 restore needs `-allow-legacy`; that
+format lacks manifest authentication and object-namespace checks. In a populated target, source
+principals must already be provisioned and their target policies are preserved.
+
+For app-scoped maintenance, `strongbox reconcile -app notes:prod` reports one resumable page.
+`-apply` queues old unreferenced object generations through the outbox; `-fix-counters` additionally
+repairs usage on the first page. Defaults are report-only and at least 24 hours of orphan grace.
+Pending attempts and committed references are protected. See
+[the recovery and reconciliation guide](RECOVERY_AND_RECONCILIATION.md) for scope, permissions,
+format details, validation levels and limitations.
 
 Restoring under a different app ID (a clone) is not supported: every ciphertext would have to be
 re-sealed under the new app's contexts, which is a separate operation from restore.

@@ -34,8 +34,8 @@ flowchart LR
 | **Contracts** | Versioned JSON Schema per collection with indexed and unique fields. Compatible changes apply at once; others run a resumable migration job that validates every record before the switch. |
 | **Attachments** | Encrypted blobs: one request up to 16 MiB, resumable upload sessions up to 5 GiB. |
 | **Budgets** | Per-app quotas enforced in the database, per-app and per-user rate limits, a per-app share of the connection pool, bounded pages and responses. |
-| **Recovery** | `export` (encrypted record payloads only; plaintext-bearing apps refused, one snapshot, versioned manifest), offline `validate-export`, `restore -dry-run`, `restore -verify`. |
-| **Operations** | OpenTelemetry metrics (no high-cardinality labels), outbox worker, `inventory`, `usage`, `audit-verify`. |
+| **Recovery** | `export` (all table payloads sealed, one snapshot, authenticated manifest), offline/authenticated validation, `restore -dry-run`, measured `restore-drill`. |
+| **Operations** | OpenTelemetry metrics (no high-cardinality labels), outbox worker, scoped `reconcile`, `inventory`, `usage`, `audit-verify`. |
 
 ## Try it locally (not for CUI)
 
@@ -86,6 +86,7 @@ build, and `serve` refuses a database login that could bypass row-level security
 |---|---|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | App model, trust boundary, roles and RLS, disclosure and revocation rules, encryption contexts, receipts, audit, outbox |
 | [SECURITY.md](docs/SECURITY.md) | NIST SP 800-171 mapping, threat model, deployment checklist |
+| [RECOVERY_AND_RECONCILIATION.md](docs/RECOVERY_AND_RECONCILIATION.md) | Sealed backups, recovery drills and scoped cleanup |
 | [OPERATIONS.md](docs/OPERATIONS.md) | Deployment, migrations, budgets, keys and KMS failure, worker, metrics, export and restore |
 | [RETENTION.md](docs/RETENTION.md) | What delete, purge, shred, history expiry and backup expiry each remove |
 | [STORED_FORMATS.md](docs/STORED_FORMATS.md) | Every persistent format ever written and how it is read |

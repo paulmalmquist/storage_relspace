@@ -1,5 +1,9 @@
 # Strongbox Medium follow-up
 
+Later work adds sealed format-2 backups, scoped reconciliation and measured restore drills.
+See [the current recovery guide](RECOVERY_AND_RECONCILIATION.md); the roadmap below records the
+prior state at `e9aca12`.
+
 Scope: the twelve Medium findings left open after the review of `2e35159`, continuing from
 `6d5edab`. All twelve original reproductions now pass and run without a build tag. Six High fixes
 from the earlier review remain in place. This closes the reproduced defects; it does not establish

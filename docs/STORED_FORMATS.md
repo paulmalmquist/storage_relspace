@@ -52,3 +52,11 @@ strongbox admin legacy-assign --app notes:prod --verify     # every legacy row d
 
 Legacy rows keep `aad_version = 1` (records, data keys) or `2` (blobs), so their ciphertext still
 authenticates after the move. Records are re-sealed with the app-bound context on their next update.
+
+
+## Sealed export bundles
+
+Format 2 encrypts every table and authenticates the manifest, including exact file inventory,
+row/byte counts and source database/object namespace. Each table uses a fresh stream key and SBX2
+64 KiB segments. See [format details and canonical authentication](RECOVERY_AND_RECONCILIATION.md#format-2).
+Format 1 remains readable with explicit legacy acceptance at the CLI; it has no manifest authentication.
