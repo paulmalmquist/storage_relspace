@@ -11,6 +11,7 @@ import (
 	"github.com/paulmalmquist/storage_relspace/internal/admin"
 	"github.com/paulmalmquist/storage_relspace/internal/audit"
 	"github.com/paulmalmquist/storage_relspace/internal/backup"
+	"github.com/paulmalmquist/storage_relspace/internal/crypto"
 	"github.com/paulmalmquist/storage_relspace/internal/service"
 	"github.com/paulmalmquist/storage_relspace/internal/store"
 )
@@ -47,7 +48,12 @@ func cmdExport(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	m, err := backup.Export(ctx, pool, backend, *app, *out, actor(), version)
+	kp, err := service.BuildKMS(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	kp = crypto.WithTimeout(kp, cfg.KMSTimeout)
+	m, err := backup.Export(ctx, pool, backend, *app, *out, actor(), version, kp)
 	if err != nil {
 		return err
 	}
@@ -56,14 +62,26 @@ func cmdExport(ctx context.Context, args []string) error {
 }
 
 // strongbox validate-export -in DIR: offline; exits 1 when anything does not match.
-func cmdValidateExport(_ context.Context, args []string) error {
+func cmdValidateExport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("validate-export", flag.ExitOnError)
+	authenticated := fs.Bool("authenticate", false, "also authenticate manifest and decrypted rows using configured KMS/keyring; no database needed")
 	in := fs.String("in", "", "export directory")
 	_ = fs.Parse(args)
 	if *in == "" {
 		return errors.New("usage: strongbox validate-export -in DIR")
 	}
 	_, rep, err := backup.Validate(*in)
+	if err == nil && *authenticated {
+		cfg, e := load()
+		if e != nil {
+			return e
+		}
+		kp, e := service.BuildKMS(ctx, cfg)
+		if e != nil {
+			return e
+		}
+		_, rep, err = backup.ValidateAuthenticated(ctx, *in, crypto.WithTimeout(kp, cfg.KMSTimeout))
+	}
 	if err != nil {
 		return err
 	}
@@ -80,6 +98,7 @@ func cmdRestore(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("restore", flag.ExitOnError)
 	in := fs.String("in", "", "export directory")
 	dry := fs.Bool("dry-run", false, "insert and check everything in a transaction, then roll back; write no objects")
+	allowLegacy := fs.Bool("allow-legacy", false, "explicitly accept unauthenticated format-1 exports")
 	verify := fs.Bool("verify", true, "after restoring, check audit chains and usage, and decrypt every record and blob metadata (needs KMS)")
 	deep := fs.Bool("deep", false, "with -verify, also stream and authenticate every blob's content")
 	_ = fs.Parse(args)
@@ -99,14 +118,31 @@ func cmdRestore(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	rep, err := backup.Restore(ctx, pool, backend, *in, *dry)
+	manifest, err := backup.Inspect(*in)
+	if err != nil {
+		return err
+	}
+	var kp crypto.KeyProvider
+	var providers []crypto.KeyProvider
+	if manifest.FormatVersion == 1 && !*allowLegacy {
+		return errors.New("format-1 restore requires -allow-legacy; it has no manifest authentication")
+	}
+	if manifest.FormatVersion == 2 {
+		kp, err = service.BuildKMS(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		kp = crypto.WithTimeout(kp, cfg.KMSTimeout)
+		providers = append(providers, kp)
+	}
+	rep, err := backup.Restore(ctx, pool, backend, *in, *dry, providers...)
 	if rep != nil {
 		printJSON(rep)
 	}
 	if err != nil || *dry || !*verify {
 		return err
 	}
-	c, err := service.Build(ctx, cfg, service.Overrides{Pool: pool})
+	c, err := service.Build(ctx, cfg, service.Overrides{Pool: pool, KMS: kp})
 	if err != nil {
 		return err
 	}

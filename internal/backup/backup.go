@@ -8,7 +8,7 @@
 // operation: every ciphertext would have to be re-sealed under the new context, which this package
 // does not do.
 //
-// Format (format_version 1):
+// Legacy format (format_version 1); format 2 encrypts tables and authenticates the manifest:
 //
 //	manifest.json             what follows, with row counts and SHA-256 digests
 //	tables/<table>.ndjson     one JSON object per row (to_jsonb), in dependency order
@@ -41,7 +41,7 @@ import (
 
 const (
 	Format        = "strongbox-export"
-	FormatVersion = 1
+	FormatVersion = 2
 )
 
 // table is exported with where (bound to $1 = app) and restored in list order.
@@ -76,10 +76,12 @@ var tables = []table{
 }
 
 type TableEntry struct {
-	Name   string `json:"name"`
-	File   string `json:"file"`
-	Rows   int64  `json:"rows"`
-	SHA256 string `json:"sha256"`
+	Name      string `json:"name"`
+	File      string `json:"file"`
+	Rows      int64  `json:"rows"`
+	SHA256    string `json:"sha256"`
+	Bytes     int64  `json:"bytes,omitempty"`
+	SealedKey []byte `json:"sealed_key,omitempty"`
 }
 
 type ObjectEntry struct {
@@ -97,6 +99,7 @@ type Manifest struct {
 	Build         string       `json:"build"`
 	SchemaVersion int          `json:"schema_version"`
 	Source        Source       `json:"source"`
+	SnapshotAt    time.Time    `json:"snapshot_at"`
 	Tables        []TableEntry `json:"tables"`
 	Objects       struct {
 		File   string `json:"file"`
@@ -104,8 +107,9 @@ type Manifest struct {
 		Bytes  int64  `json:"bytes"`
 		SHA256 string `json:"sha256"`
 	} `json:"objects"`
-	KEKs  []string `json:"kek_ids"`
-	Notes string   `json:"notes"`
+	KEKs       []string          `json:"kek_ids"`
+	Notes      string            `json:"notes"`
+	Encryption *ExportEncryption `json:"encryption,omitempty"`
 }
 
 type Source struct {
@@ -141,11 +145,12 @@ func ownerTx(ctx context.Context, pool *pgxpool.Pool, opts pgx.TxOptions, fn fun
 }
 
 type hashingFile struct {
-	f    *os.File
-	w    *bufio.Writer
-	h    io.Writer
-	sum  func() string
-	rows int64
+	f      *os.File
+	w      *bufio.Writer
+	h      io.Writer
+	sum    func() string
+	rows   int64
+	sealed *crypto.StreamEncryptor
 }
 
 func create(path string) (*hashingFile, error) {
@@ -160,15 +165,43 @@ func create(path string) (*hashingFile, error) {
 	return &hashingFile{f: f, w: bufio.NewWriter(io.MultiWriter(f, h)), h: h, sum: func() string { return hex.EncodeToString(h.Sum(nil)) }}, nil
 }
 
+func (h *hashingFile) write(p []byte) error {
+	for len(p) > 0 {
+		n := min(len(p), 64<<10)
+		piece := p[:n]
+		p = p[n:]
+		if h.sealed != nil {
+			var err error
+			piece, err = h.sealed.Update(piece)
+			if err != nil {
+				return err
+			}
+		}
+		if _, err := h.w.Write(piece); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 func (h *hashingFile) line(b []byte) error {
 	h.rows++
-	if _, err := h.w.Write(b); err != nil {
+	if err := h.write(b); err != nil {
 		return err
 	}
-	return h.w.WriteByte('\n')
+	return h.write([]byte{'\n'})
 }
 
 func (h *hashingFile) close() error {
+	if h.sealed != nil {
+		tail, err := h.sealed.Finalize()
+		if err == nil {
+			_, err = h.w.Write(tail)
+		}
+		if err != nil {
+			_ = h.f.Close()
+			return err
+		}
+	}
 	if err := h.w.Flush(); err != nil {
 		_ = h.f.Close()
 		return err
@@ -180,13 +213,38 @@ func (h *hashingFile) close() error {
 	return h.f.Close()
 }
 
-// Export writes app to dir (which must not exist or be empty).
+// Export writes app to dir (which must not exist or be empty). A key provider selects sealed
+// format 2 and supports every collection. Omitting it preserves the legacy format-1 writer for
+// compatibility tests; that path refuses plaintext-bearing apps. The CLI always supplies KMS.
 func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app, dir, actor, build string, providers ...crypto.KeyProvider) (*Manifest, error) {
 	if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
 		return nil, fmt.Errorf("%s is not empty", dir)
 	}
-	m := &Manifest{Format: Format, FormatVersion: FormatVersion, App: app, CreatedAt: time.Now().UTC(), CreatedBy: actor, Build: build,
+	if len(providers) > 1 {
+		return nil, errors.New("one export key provider is required")
+	}
+	format := 1
+	var key []byte
+	if len(providers) == 1 {
+		if providers[0] == nil {
+			return nil, errors.New("export key provider is nil")
+		}
+		format = FormatVersion
+		key = crypto.NewDataKey()
+		defer clear(key)
+	}
+	m := &Manifest{Format: Format, FormatVersion: format, App: app, CreatedAt: time.Now().UTC(), CreatedBy: actor, Build: build,
 		Notes: "Ciphertext only. Readable with access to the KMS keys listed in kek_ids and only under this app's identity."}
+	if format == 2 {
+		m.Notes = "Encrypted table streams and encrypted objects. Manifest/inventory expose operational metadata only. Offline validation checks transport integrity; restore authenticates the manifest and every table."
+		m.Encryption = &ExportEncryption{ID: store.NewID("ex")}
+		wrapped, err := providers[0].Wrap(ctx, key, exportAAD(m, "key"))
+		if err != nil {
+			return nil, err
+		}
+		m.Encryption.KEKID = wrapped.KEKID
+		m.Encryption.WrappedKey = wrapped.Ciphertext
+	}
 	var objects []ObjectEntry
 	source, err := identity(ctx, pool)
 	if err != nil {
@@ -204,6 +262,9 @@ func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app,
 			return err
 		}
 		m.Source = source
+		if err := tx.QueryRow(ctx, `SELECT transaction_timestamp()`).Scan(&m.SnapshotAt); err != nil {
+			return err
+		}
 		// Format 1 preserves database ciphertext; it cannot safely export plaintext collections.
 		// Refuse before creating any files, including plaintext historical/index values.
 		var plain bool
@@ -211,7 +272,7 @@ func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app,
             OR EXISTS(SELECT 1 FROM record_revisions WHERE app=$1 AND data_plain IS NOT NULL)`, app).Scan(&plain); err != nil {
 			return err
 		}
-		if plain {
+		if plain && format == 1 {
 			return errors.New("format 1 export refuses plaintext record data; use encrypted collections")
 		}
 		for _, t := range tables {
@@ -223,11 +284,28 @@ func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app,
 			if err != nil {
 				return fmt.Errorf("%s: %w", t.name, err)
 			}
-			file := "tables/" + t.name + ".ndjson"
+			file := tableFile(m.FormatVersion, t.name)
 			out, err := create(filepath.Join(dir, file))
 			if err != nil {
 				rows.Close()
 				return err
+			}
+			entry := TableEntry{Name: t.name, File: file}
+			if format == 2 {
+				fileKey := crypto.NewDataKey()
+				entry.SealedKey, err = crypto.Seal(key, fileKey, exportAAD(m, "file-key/"+file))
+				if err == nil {
+					out.sealed, err = crypto.NewStreamEncryptor(fileKey, exportAAD(m, file), 64<<10)
+				}
+				clear(fileKey)
+				if err == nil {
+					_, err = out.w.Write(out.sealed.Header())
+				}
+				if err != nil {
+					rows.Close()
+					_ = out.f.Close()
+					return err
+				}
 			}
 			for rows.Next() {
 				var raw json.RawMessage
@@ -247,7 +325,15 @@ func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app,
 			if err := out.close(); err != nil {
 				return err
 			}
-			m.Tables = append(m.Tables, TableEntry{Name: t.name, File: file, Rows: out.rows, SHA256: out.sum()})
+			entry.Rows, entry.SHA256 = out.rows, out.sum()
+			if format == 2 {
+				st, err := os.Stat(filepath.Join(dir, file))
+				if err != nil {
+					return err
+				}
+				entry.Bytes = st.Size()
+			}
+			m.Tables = append(m.Tables, entry)
 		}
 		// Objects of every blob that still has them: single objects and parts.
 		rows, err := tx.Query(ctx, `SELECT storage_key,state='active' AS required FROM blobs WHERE app = $1 AND layout = 'single' AND state IN ('active', 'deleted', 'shredded')
@@ -300,6 +386,19 @@ func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app,
 		return nil, err
 	}
 	m.Objects.File, m.Objects.Count, m.Objects.SHA256 = "objects.ndjson", out.rows, out.sum()
+	if format == 2 {
+		m.KEKs = append(m.KEKs, m.Encryption.KEKID)
+		slices.Sort(m.KEKs)
+		m.KEKs = slices.Compact(m.KEKs)
+		aad, err := manifestAAD(m)
+		if err != nil {
+			return nil, err
+		}
+		m.Encryption.Auth, err = crypto.Seal(key, nil, aad)
+		if err != nil {
+			return nil, err
+		}
+	}
 	raw, _ := json.MarshalIndent(m, "", "  ")
 	return m, os.WriteFile(filepath.Join(dir, "manifest.json"), append(raw, '\n'), 0o600)
 }
@@ -342,12 +441,14 @@ func copyOut(ctx context.Context, backend store.Backend, key, dir string) (Objec
 // ---- validation ------------------------------------------------------------------------------------
 
 type Report struct {
-	App      string   `json:"app"`
-	Tables   int      `json:"tables"`
-	Rows     int64    `json:"rows"`
-	Objects  int64    `json:"objects"`
-	Bytes    int64    `json:"bytes"`
-	Problems []string `json:"problems"`
+	App           string   `json:"app"`
+	Tables        int      `json:"tables"`
+	Rows          int64    `json:"rows"`
+	Objects       int64    `json:"objects"`
+	Bytes         int64    `json:"bytes"`
+	Problems      []string `json:"problems"`
+	Level         string   `json:"level"`
+	Authenticated bool     `json:"authenticated"`
 }
 
 func (r *Report) OK() bool { return len(r.Problems) == 0 }
@@ -388,19 +489,36 @@ func digestFile(path string) (string, int64, int64, error) {
 }
 
 func readManifest(dir string) (*Manifest, error) {
-	raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	f, err := os.Open(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		return nil, err
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
+	_ = f.Close()
+	if len(raw) > 1<<20 {
+		return nil, errors.New("manifest exceeds 1 MiB")
+	}
 	if err != nil {
 		return nil, err
 	}
 	var m Manifest
+	if _, err := decodeRow(raw); err != nil {
+		return nil, fmt.Errorf("manifest: %w", err)
+	}
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, fmt.Errorf("manifest: %w", err)
 	}
 	if m.Format != Format {
 		return nil, fmt.Errorf("not a Strongbox export (format %q)", m.Format)
 	}
-	if m.FormatVersion != FormatVersion {
+	if m.FormatVersion != 1 && m.FormatVersion != FormatVersion {
 		return nil, fmt.Errorf("export format_version %d is not supported by this build (supports %d)", m.FormatVersion, FormatVersion)
+	}
+	if m.FormatVersion == 2 && (m.Encryption == nil || !exportIDPattern.MatchString(m.Encryption.ID) || len(m.Encryption.WrappedKey) == 0 || len(m.Encryption.Auth) == 0) {
+		return nil, errors.New("missing or invalid export encryption metadata")
+	}
+	if m.FormatVersion == 1 && m.Encryption != nil {
+		return nil, errors.New("mixed export format versions")
 	}
 	return &m, nil
 }
@@ -411,7 +529,10 @@ func eachLine(path string, fn func([]byte) error) error {
 		return err
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
+	return scanLines(f, fn)
+}
+func scanLines(src io.Reader, fn func([]byte) error) error {
+	sc := bufio.NewScanner(src)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
 	for sc.Scan() {
 		if err := fn(sc.Bytes()); err != nil {
@@ -429,7 +550,21 @@ func Validate(dir string) (*Manifest, *Report, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	rep := &Report{App: m.App}
+	if m.FormatVersion == 2 {
+		return validateTransport(dir, m)
+	}
+	rep, err := validateContent(dir, m, tableReader(dir, m, nil))
+	return m, rep, err
+}
+
+type readTable func(name string, fn func([]byte) error) error
+
+func validateContent(dir string, m *Manifest, read readTable) (*Report, error) {
+	var err error
+	rep := &Report{App: m.App, Level: "structural", Authenticated: m.FormatVersion == 2}
+	if rep.Authenticated {
+		rep.Level = "authenticated"
+	}
 	if !store.ValidApp(m.App) {
 		rep.addf("invalid app identity")
 	}
@@ -444,7 +579,7 @@ func Validate(dir string) (*Manifest, *Report, error) {
 			rep.addf("table %s is not part of format_version %d", t.Name, FormatVersion)
 			continue
 		}
-		if seen[t.Name] || t.File != "tables/"+t.Name+".ndjson" {
+		if seen[t.Name] || t.File != tableFile(m.FormatVersion, t.Name) {
 			rep.addf("duplicate table or noncanonical file for %s", t.Name)
 			continue
 		}
@@ -455,12 +590,14 @@ func Validate(dir string) (*Manifest, *Report, error) {
 			rep.addf("%s: %v", t.File, err)
 		case sum != t.SHA256:
 			rep.addf("%s: digest mismatch", t.File)
-		case rows != t.Rows:
+		case m.FormatVersion == 1 && rows != t.Rows:
 			rep.addf("%s: %d rows, manifest says %d", t.File, rows, t.Rows)
 		}
 		rep.Tables++
-		rep.Rows += rows
-		if err := eachLine(filepath.Join(dir, t.File), func(raw []byte) error {
+		rep.Rows += t.Rows
+		var count int64
+		if err := read(t.Name, func(raw []byte) error {
+			count++
 			if err := rowScope(t.Name, m.App, raw); err != nil {
 				return err
 			}
@@ -472,6 +609,9 @@ func Validate(dir string) (*Manifest, *Report, error) {
 		}); err != nil {
 			rep.addf("%s: %v", t.File, err)
 		}
+		if count != t.Rows {
+			rep.addf("%s: decrypted row count mismatch", t.File)
+		}
 	}
 	for _, t := range tables {
 		if !seen[t.name] {
@@ -480,12 +620,12 @@ func Validate(dir string) (*Manifest, *Report, error) {
 	}
 	if m.Objects.File != "objects.ndjson" {
 		rep.addf("noncanonical object inventory file")
-		return m, rep, nil
+		return rep, nil
 	}
 	sum, _, _, err := digestFile(filepath.Join(dir, m.Objects.File))
 	if err != nil || sum != m.Objects.SHA256 {
 		rep.addf("%s: missing or digest mismatch", m.Objects.File)
-		return m, rep, nil
+		return rep, nil
 	}
 	objects := map[string]ObjectEntry{}
 	err = eachLine(filepath.Join(dir, m.Objects.File), func(b []byte) error {
@@ -523,7 +663,7 @@ func Validate(dir string) (*Manifest, *Report, error) {
 		return nil
 	})
 	if err != nil {
-		return m, rep, err
+		return rep, err
 	}
 	if rep.Objects != m.Objects.Count || rep.Bytes != m.Objects.Bytes {
 		rep.addf("object inventory count/bytes do not match manifest")
@@ -538,7 +678,7 @@ func Validate(dir string) (*Manifest, *Report, error) {
 		CipherBytes int64  `json:"cipher_bytes"`
 	}
 	parts := map[string][]part{}
-	if err := eachLine(filepath.Join(dir, "tables/blob_parts.ndjson"), func(b []byte) error {
+	if err := read("blob_parts", func(b []byte) error {
 		var p part
 		if err := json.Unmarshal(b, &p); err != nil {
 			return err
@@ -546,9 +686,9 @@ func Validate(dir string) (*Manifest, *Report, error) {
 		parts[p.BlobID] = append(parts[p.BlobID], p)
 		return nil
 	}); err != nil {
-		return m, rep, err
+		return rep, err
 	}
-	err = eachLine(filepath.Join(dir, "tables/blobs.ndjson"), func(b []byte) error {
+	err = read("blobs", func(b []byte) error {
 		var bl struct {
 			ID       string  `json:"id"`
 			App      string  `json:"app"`
@@ -614,9 +754,9 @@ func Validate(dir string) (*Manifest, *Report, error) {
 		return nil
 	})
 	if err != nil {
-		return m, rep, err
+		return rep, err
 	}
-	return m, rep, nil
+	return rep, nil
 }
 
 // ---- restore ---------------------------------------------------------------------------------------
@@ -638,6 +778,22 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, dir
 	if err != nil {
 		return nil, err
 	}
+	var key []byte
+	if m.FormatVersion == 2 && rep.OK() {
+		if len(providers) != 1 || providers[0] == nil {
+			return nil, errors.New("sealed restore requires one key provider")
+		}
+		key, err = unlock(ctx, m, providers[0])
+		if err != nil {
+			return nil, err
+		}
+		defer clear(key)
+		rep, err = validateContent(dir, m, tableReader(dir, m, key))
+		if err != nil {
+			return nil, err
+		}
+	}
+	read := tableReader(dir, m, key)
 	out := &RestoreReport{App: m.App, DryRun: dryRun, Rows: map[string]int64{}}
 	if !rep.OK() {
 		out.Problems = rep.Problems
@@ -685,7 +841,7 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, dir
 			return err
 		}
 		if populated {
-			if err := eachLine(filepath.Join(dir, "tables/principals.ndjson"), func(raw []byte) error {
+			if err := read("principals", func(raw []byte) error {
 				row, err := decodeRow(raw)
 				if err != nil {
 					return err
@@ -712,7 +868,7 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, dir
 			if !ok {
 				continue
 			}
-			n, err := load(ctx, tx, t, filepath.Join(dir, e.File))
+			n, err := load(ctx, tx, t, m.App, func(fn func([]byte) error) error { return read(e.Name, fn) })
 			if err != nil {
 				return fmt.Errorf("%s: %w", t.name, err)
 			}
@@ -743,9 +899,14 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, dir
 				if err != nil {
 					return err
 				}
-				if _, err := io.Copy(w, f); err != nil {
+				h := sha256.New()
+				n, err := io.Copy(io.MultiWriter(w, h), f)
+				if err != nil || n != o.Bytes || hex.EncodeToString(h.Sum(nil)) != o.SHA256 {
 					_ = w.Abort()
-					return err
+					if err != nil {
+						return err
+					}
+					return errors.New("object changed during restore")
 				}
 				out.Objects++
 				return w.Commit()
@@ -781,7 +942,7 @@ func columns(ctx context.Context, tx pgx.Tx, table string) (map[string]bool, err
 
 // load inserts a table file in batches. Columns missing from the export (an older schema) take
 // their defaults; a column the target lacks (a newer schema) is an error.
-func load(ctx context.Context, tx pgx.Tx, t table, path string) (int64, error) {
+func load(ctx context.Context, tx pgx.Tx, t table, app string, read func(func([]byte) error) error) (int64, error) {
 	have, err := columns(ctx, tx, t.name)
 	if err != nil {
 		return 0, err
@@ -809,7 +970,30 @@ func load(ctx context.Context, tx pgx.Tx, t table, path string) (int64, error) {
 		batch = batch[:0]
 		return err
 	}
-	err = eachLine(path, func(b []byte) error {
+	batchBytes := 0
+	err = read(func(b []byte) error {
+		if err := rowScope(t.name, app, b); err != nil {
+			return err
+		}
+		row, err := decodeRow(b)
+		if err != nil {
+			return err
+		}
+		for c := range row {
+			if !have[c] {
+				return fmt.Errorf("export has column %s that this schema lacks; upgrade the target", c)
+			}
+		}
+		if cols != nil {
+			if len(row) != len(cols) {
+				return errors.New("inconsistent row columns")
+			}
+			for _, c := range cols {
+				if _, ok := row[c]; !ok {
+					return errors.New("inconsistent row columns")
+				}
+			}
+		}
 		if cols == nil {
 			var row map[string]json.RawMessage
 			if err := json.Unmarshal(b, &row); err != nil {
@@ -824,7 +1008,9 @@ func load(ctx context.Context, tx pgx.Tx, t table, path string) (int64, error) {
 			slices.Sort(cols)
 		}
 		batch = append(batch, append(json.RawMessage(nil), b...))
-		if len(batch) == 500 {
+		batchBytes += len(b)
+		if len(batch) == 500 || batchBytes >= 8<<20 {
+			batchBytes = 0
 			return flush()
 		}
 		return nil

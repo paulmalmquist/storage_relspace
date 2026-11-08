@@ -3,11 +3,14 @@ package backup_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/paulmalmquist/storage_relspace/internal/backup"
+	"github.com/paulmalmquist/storage_relspace/internal/crypto"
 	"github.com/paulmalmquist/storage_relspace/internal/markings"
 	"github.com/paulmalmquist/storage_relspace/internal/service"
 	"github.com/paulmalmquist/storage_relspace/internal/testenv"
@@ -98,5 +101,89 @@ func TestSealedExportDoesNotExposeRegistryOrSchema(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSealedRestoreRejectsRehashedTamperingBeforeWrites(t *testing.T) {
+	for _, attack := range []string{"table", "source", "app", "export-id", "table-name", "rows", "object-inventory"} {
+		t.Run(attack, func(t *testing.T) {
+			src, ctx := testenv.New(t), context.Background()
+			dir := t.TempDir()
+			m, err := backup.Export(ctx, src.Migrator, src.C.Backend, testenv.App, dir, "test", "test", src.C.KMS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reviewManifest(t, dir, func(changed *backup.Manifest) {
+				switch attack {
+				case "table":
+					path := filepath.Join(dir, changed.Tables[0].File)
+					raw, e := os.ReadFile(path)
+					if e != nil {
+						t.Fatal(e)
+					}
+					raw[len(raw)-1] ^= 1
+					if err := os.WriteFile(path, raw, 0600); err != nil {
+						t.Fatal(err)
+					}
+					sum := sha256.Sum256(raw)
+					changed.Tables[0].SHA256 = hex.EncodeToString(sum[:])
+				case "source":
+					changed.Source.Database = "substituted"
+				case "app":
+					changed.App = testenv.Other
+				case "export-id":
+					changed.Encryption.ID = "ex_00000000000000000000000000000000"
+				case "table-name":
+					changed.Tables[0].File = "tables/../apps.ndjson.sbx"
+				case "rows":
+					changed.Tables[0].Rows++
+				case "object-inventory":
+					changed.Objects.Count++
+				}
+			})
+			dst := testenv.EmptyDatabase(t, src.Keyring)
+			backend := &reviewCountingBackend{Backend: dst.C.Backend}
+			if _, err := backup.Restore(ctx, dst.Migrator, backend, dir, false, dst.C.KMS); err == nil {
+				t.Fatal("tampered sealed bundle accepted")
+			}
+			if backend.writes != 0 {
+				t.Fatal("refused restore wrote objects")
+			}
+			var n int
+			if err := dst.Migrator.QueryRow(ctx, `SELECT count(*) FROM apps WHERE app=$1`, m.App).Scan(&n); err != nil || n != 0 {
+				t.Fatalf("refused restore wrote app: %d %v", n, err)
+			}
+		})
+	}
+}
+
+func TestSealedValidateAuthenticatesOfflineAndNeedsCorrectKey(t *testing.T) {
+	src, ctx := testenv.New(t), context.Background()
+	dir := t.TempDir()
+	if _, err := backup.Export(ctx, src.Migrator, src.C.Backend, testenv.App, dir, "test", "test", src.C.KMS); err != nil {
+		t.Fatal(err)
+	}
+	_, transport, err := backup.Validate(dir)
+	if err != nil || !transport.OK() || transport.Authenticated || transport.Level != "transport" {
+		t.Fatalf("transport report %+v %v", transport, err)
+	}
+	_, full, err := backup.ValidateAuthenticated(ctx, dir, src.C.KMS)
+	if err != nil || !full.OK() || !full.Authenticated || full.Level != "authenticated" {
+		t.Fatalf("authenticated report %+v %v", full, err)
+	}
+	other := testenv.New(t)
+	if _, _, err := backup.ValidateAuthenticated(ctx, dir, other.C.KMS); err == nil {
+		t.Fatal("unrelated keyring authenticated export")
+	}
+	// Retiring the active KEK must leave existing bundles readable through the old version.
+	if _, err := crypto.RotateLocalKeyring(src.Keyring); err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := crypto.LoadLocalKeyring(src.Keyring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, report, err := backup.ValidateAuthenticated(ctx, dir, rotated); err != nil || !report.OK() {
+		t.Fatalf("old KEK recovery: %+v %v", report, err)
 	}
 }
