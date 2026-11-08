@@ -1,0 +1,19 @@
+?   	github.com/paulmalmquist/storage_relspace/cmd/strongbox	[no test files]
+?   	github.com/paulmalmquist/storage_relspace/cmd/strongbox-load	[no test files]
+ok  	github.com/paulmalmquist/storage_relspace/internal/admin	2.490s
+ok  	github.com/paulmalmquist/storage_relspace/internal/api	12.757s
+ok  	github.com/paulmalmquist/storage_relspace/internal/audit	6.277s
+ok  	github.com/paulmalmquist/storage_relspace/internal/auth	1.249s
+ok  	github.com/paulmalmquist/storage_relspace/internal/backup	12.566s
+ok  	github.com/paulmalmquist/storage_relspace/internal/cache	1.074s
+ok  	github.com/paulmalmquist/storage_relspace/internal/config	1.018s
+ok  	github.com/paulmalmquist/storage_relspace/internal/crypto	1.216s
+?   	github.com/paulmalmquist/storage_relspace/internal/errs	[no test files]
+ok  	github.com/paulmalmquist/storage_relspace/internal/markings	1.019s
+ok  	github.com/paulmalmquist/storage_relspace/internal/mcpserver	10.468s
+ok  	github.com/paulmalmquist/storage_relspace/internal/service	41.453s
+ok  	github.com/paulmalmquist/storage_relspace/internal/store	13.274s
+?   	github.com/paulmalmquist/storage_relspace/internal/telemetry	[no test files]
+?   	github.com/paulmalmquist/storage_relspace/internal/testenv	[no test files]
+?   	github.com/paulmalmquist/storage_relspace/internal/testenv/pgtest	[no test files]
+ok  	github.com/paulmalmquist/storage_relspace/pkg/client	10.892s

@@ -116,7 +116,10 @@ cursors (bound to app and listing), data-key scopes, AAD and blind-index tokens 
 
 ### Transactions
 
-`store.DB.Run(ctx, scope, fn)` is the only way service code touches the database:
+App resource operations use `store.DB.Run(ctx, scope, fn)`. Principal registry reads and the
+registry's provisioning helpers still use the pool directly; those reads do not inherit `Run`'s
+acquisition budget (review finding M08 in [the independent review](STRONGBOX_REVIEW_2e35159.md)).
+`Run` performs:
 
 1. `BEGIN`, then one parameterized `SELECT set_config('strongbox.app', $1, true), …` for the scope
    (transaction-local, so a pooled connection never carries context into the next transaction);
@@ -168,14 +171,17 @@ leaves a `pending` row whose lease expires; the worker aborts it and queues the 
 - A filter is an assertion about content. Filtered queries consider only records whose content the
   caller may read, so an agent that is denied content cannot use filters as an oracle
   (`TestFiltersAreNotAnOracle`).
-- There are no count endpoints and no plaintext search indexes. Equality filters use HMAC
-  blind-index tokens (below).
+- Encrypted collections use HMAC equality tokens. Unencrypted UNCONTROLLED collections use plain
+  equality tokens. `/usage` exposes app-wide counts and bytes to members, and migration status can
+  expose private record IDs; these are unresolved disclosure findings (M05).
 - Errors are sanitized: schema compile errors, for example, never include fetched content.
 
 ## Revocation
 
-Every request evaluates membership, team membership, grants and visibility in its own transaction,
-so a committed revocation applies to the next statement any request runs. Specifically:
+New requests re-read principal policy, app membership, team membership, grants and visibility.
+Already-authorized streams may finish. This is a next-request guarantee, not a promise to cancel
+every statement already in flight. Upload-session status still omits a classification check (M06).
+Specifically:
 
 | Situation after revocation | Result |
 |---|---|
@@ -232,8 +238,10 @@ GCM IVs, which is why the format does not use a counter nonce. See
 
 ## Operations, receipts and retries
 
-Every mutation carries an operation ID (`Idempotency-Key` header; the SDKs generate one per logical
-operation and reuse it across retries). The receipt key is `(app, subject, actor, op_id)`, so an
+The SDKs generate operation IDs and reuse them across transport retries. The API currently accepts
+mutations without an ID. Receipts cover record create/update/delete/restore, collection
+create/contract-change, blob creation, and upload-session create/complete; other mutations do not
+yet consistently use receipts (M01). The receipt key is `(app, subject, actor, op_id)`, so an
 agent acting for a user and the user acting directly never share a namespace.
 
 1. The receipt is claimed (`INSERT … ON CONFLICT DO NOTHING`, then `FOR UPDATE`) **before** version
@@ -244,7 +252,9 @@ agent acting for a user and the user acting directly never share a namespace.
    `409 idempotency_key_reused`.
 3. The receipt commits with the mutation. A concurrent attempt with the same ID gets
    `409 operation_in_progress` with `Retry-After`.
-4. A replay returns the version that operation wrote, re-authorized against current rights.
+4. A replay is re-authorized against current rights. It returns the original version while that
+   revision is retained; the current implementation silently falls back to the current version
+   after history pruning. Concurrent first-use receipt-key creation can also break replay (M04).
 5. `GET /v1/apps/{app}/operations/{op_id}` reports `pending`, `succeeded` (with resource and
    version) or `not_found`. Receipts expire after seven days.
 
@@ -261,14 +271,16 @@ until history expiry (`collections.history_limit`, default 100) or a purge.
 
 A collection's contract (JSON Schema, indexed fields, unique fields) is versioned in
 `collection_versions`. `PUT …/collections/{name}/contract` (compare-and-swap on the version) applies a
-change at once when a conservative checker proves every record valid before is valid after (wider
+change at once when its compatibility checker accepts the change (wider
 types, removed `required`, looser bounds, added enum values, properties added under
 `additionalProperties: false`) and no index, uniqueness or default is added. Anything else is staged
 as `pending_version` and the worker runs a migration job in batches of 200 with a committed cursor:
 apply declared defaults (a new version, op `migrate`, in history), validate, backfill index and
 uniqueness tokens. The collection switches only if every live record passes; otherwise the job fails
 with record IDs and reasons. Writers hold the collection's contract lock shared and staging and
-switching hold it exclusively, so every write after a change is staged satisfies both contracts.
+switching hold it exclusively, so request writes after a change is staged satisfy both contracts.
+The checker currently misclassifies `const: null` and some changes involving `patternProperties`;
+its implication proof is not sound for those cases (M03).
 
 Unique fields are enforced on blind-index tokens. A unique violation is visible to any writer
 regardless of RLS (that is what uniqueness means), so the error never names the record holding the
@@ -283,8 +295,9 @@ sequence order equals commit order. Denials are written after the request's tran
 in their own transaction. Each event's hash covers the chain, app, format version and the previous
 hash; `strongbox audit-verify [-app …]` checks every chain.
 
-The worker delivers committed events to the structured log (and from there to the locked Cloud
-Logging bucket) through a per-chain cursor (`audit_delivery`). Delivery is at least once.
+The worker delivers committed events to the structured log through a per-chain cursor
+(`audit_delivery`). Delivery is at least once. Terraform configures a Cloud Logging sink and an
+initially unlocked bucket; locking its retention is an operator action.
 
 ## Outbox and worker
 
@@ -312,7 +325,7 @@ horizon. Realtime delivery, webhooks and CRDT merging are out of scope.
 | Ciphertext fails authentication | `integrity_violation`, audited as `error`; the first segment is checked before the response starts |
 | Upload interrupted or crashed | Row stays `pending` until its lease expires; the worker aborts it and deletes the object |
 | Stale write | `412 precondition_failed` (If-Match / expected version) |
-| Retry after a lost response | Same operation ID returns the original result |
+| Retry after a lost response | Receipted operations recheck access; original-version replay depends on history retention and stable receipt keys (M04) |
 | Commit outcome unknown | `503`, `ErrCommitUnknown`; the client checks the operation ID |
 | Statement timeout or pool exhaustion | `503 unavailable` with `Retry-After` |
 | KMS unavailable | Requests needing an uncached unwrap fail with `503`; cached keys keep serving until their TTL |

@@ -162,11 +162,11 @@ strongbox validate-export -in /secure/notes-2026-11-07   # offline: digests, row
 ```
 
 An export (format version 1, see `internal/backup`) holds one app's rows, read from one database
-snapshot, and its encrypted objects, with SHA-256 digests in `manifest.json`. It is ciphertext: it
-can only be read with the KMS key versions listed in `kek_ids`, and only under the same app
-identity, because the app is bound into every encryption context. Treat it as CUI anyway (it
-carries markings, filenames' ciphertext, membership and audit history) and store it in a
-CUI-approved location.
+snapshot, and its encrypted objects, with SHA-256 digests in `manifest.json`. This format is not
+ciphertext-only: unencrypted UNCONTROLLED records, revisions and plain equality tokens remain
+plaintext (review finding M10). Membership, schemas and audit metadata are also readable. Current
+ciphertexts bind the app; assigned legacy ciphertexts retain their older contexts. Protect the
+entire export according to its data classification.
 
 Restore runs with the **target's** configuration (database, bucket, KMS):
 
@@ -178,9 +178,12 @@ strongbox restore -in /secure/notes-2026-11-07 -deep      # restore, then decryp
 
 Restore refuses a target that is the export's source database and schema, one that already has the
 app, and one at an older schema than the export. It validates the export first and refuses a
-mismatch. Objects are copied before rows are committed, so a failure leaves unreferenced objects in
-the target, never rows that point at missing objects. Principals the app references are added only
-if the target lacks them; the target's existing principals are not changed.
+mismatch. Objects are copied before rows are committed; a copy failure rolls back the rows and can leave
+unreferenced objects in the target. Row scopes, canonical manifest paths and
+object prefixes are checked before writing. In a populated target, every source principal must
+already be provisioned by the target operator; existing policy is preserved. A genuinely empty
+target can recover the source principals. Offline validation still misses an active multipart
+blob whose part list has been removed; deep verification detects its missing stream (M11).
 
 Restoring under a different app ID (a clone) is not supported: every ciphertext would have to be
 re-sealed under the new app's contexts, which is a separate operation from restore.
@@ -189,5 +192,5 @@ re-sealed under the new app's contexts, which is a separate operation from resto
 
 `strongbox audit-verify [-app APP]` (migration login) checks every hash chain. A failure names the
 chain and the first bad sequence number. The worker delivers committed events to the structured log
-(`jsonPayload.audit=true`), which the Terraform sink copies into the locked log bucket; that copy is
-the independent record if the database is tampered with.
+(`jsonPayload.audit=true`), which the Terraform sink routes to the audit log bucket. The bucket is
+initially unlocked (`locked = false`); retention becomes immutable only after the operator locks it.

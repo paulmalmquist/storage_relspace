@@ -1,0 +1,4 @@
+=== RUN   TestReviewAllAppTablesForceRLSAndDefinersPinPath
+--- PASS: TestReviewAllAppTablesForceRLSAndDefinersPinPath (0.46s)
+PASS
+ok  	github.com/paulmalmquist/storage_relspace/internal/store	1.496s

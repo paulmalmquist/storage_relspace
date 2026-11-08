@@ -1,0 +1,79 @@
+
+> @strongbox/client@0.3.0 test
+> node --test test/*.test.ts
+
+TAP version 13
+# Subtest: private state, team sharing, conflict recovery and undo
+ok 1 - private state, team sharing, conflict recovery and undo
+  ---
+  duration_ms: 240.412899
+  type: 'test'
+  ...
+# Subtest: a lost response is recovered with the same operation ID
+ok 2 - a lost response is recovered with the same operation ID
+  ---
+  duration_ms: 47.320055
+  type: 'test'
+  ...
+# Subtest: blobs: one request and an upload session
+ok 3 - blobs: one request and an upload session
+  ---
+  duration_ms: 170.239824
+  type: 'test'
+  ...
+# Subtest: a mutation is retried with the same operation ID after 503 and a lost connection
+ok 4 - a mutation is retried with the same operation ID after 503 and a lost connection
+  ---
+  duration_ms: 413.616237
+  type: 'test'
+  ...
+# Subtest: conflicts are not retried and surface as typed errors
+ok 5 - conflicts are not retried and surface as typed errors
+  ---
+  duration_ms: 1.469594
+  type: 'test'
+  ...
+# Subtest: retries are bounded
+ok 6 - retries are bounded
+  ---
+  duration_ms: 546.282117
+  type: 'test'
+  ...
+# Subtest: mutate re-reads and re-applies after a conflict
+ok 7 - mutate re-reads and re-applies after a conflict
+  ---
+  duration_ms: 2.639447
+  type: 'test'
+  ...
+# Subtest: an aborted call stops waiting
+ok 8 - an aborted call stops waiting
+  ---
+  duration_ms: 0.759975
+  type: 'test'
+  ...
+# Subtest: workload credentials refuse to run in a browser
+ok 9 - workload credentials refuse to run in a browser
+  ---
+  duration_ms: 0.35792
+  type: 'test'
+  ...
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1529.062517
+
+> @strongbox/client@0.3.0 example
+> node examples/demo.ts
+
+alice saved rec_079eccb06c665e1da5df44a3919db6d4 (v1, private, CUI//SP-EXPT)
+bob cannot see it: private by default
+shared with team ops-notes_mw72pbvb -> { items: [ 'fuel' ], title: 'Launch checklist' }
+alice's stale write was refused: record is at version 2, not 1
+merged v3: [ 'fuel', 'weather', 'range' ]
+undo to v2 wrote v4: [ 'fuel', 'weather' ]
+history: v4 restore, v3 update, v2 update, v1 create

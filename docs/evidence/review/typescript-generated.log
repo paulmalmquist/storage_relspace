@@ -1,0 +1,6 @@
+
+> @strongbox/client@0.3.0 check-generated
+> openapi-typescript ../../internal/api/openapi.json -o /tmp/strongbox-schema.d.ts && diff -u src/schema.d.ts /tmp/strongbox-schema.d.ts
+
+✨ openapi-typescript 7.13.0
+🚀 ../../internal/api/openapi.json → /tmp/strongbox-schema.d.ts [171.4ms]

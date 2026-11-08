@@ -1,0 +1,308 @@
+{
+  "base_commit": "2e35159be7fea478a68f103c9dfc05adeaed18bf",
+  "versions": {
+    "go": "1.26.10",
+    "postgresql": "16.15",
+    "node": "22.18.0",
+    "staticcheck": "0.8.2",
+    "govulncheck": "1.9.0"
+  },
+  "integration_required": true,
+  "race_detector": true,
+  "GODEBUG": "fips140=only",
+  "final_go_exit": 0,
+  "test_results_including_subtests": {
+    "pass": 149
+  },
+  "top_level_tests": 149,
+  "packages": {
+    "github.com/paulmalmquist/storage_relspace/cmd/strongbox": {
+      "status": "skip",
+      "elapsed_seconds": 0
+    },
+    "github.com/paulmalmquist/storage_relspace/cmd/strongbox-load": {
+      "status": "skip",
+      "elapsed_seconds": 0
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/cache": {
+      "status": "pass",
+      "elapsed_seconds": 1.069
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/errs": {
+      "status": "skip",
+      "elapsed_seconds": 0
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/config": {
+      "status": "pass",
+      "elapsed_seconds": 1.013
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/auth": {
+      "status": "pass",
+      "elapsed_seconds": 1.442
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/markings": {
+      "status": "pass",
+      "elapsed_seconds": 1.024
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/crypto": {
+      "status": "pass",
+      "elapsed_seconds": 1.2770000000000001
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/telemetry": {
+      "status": "skip",
+      "elapsed_seconds": 0
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/testenv": {
+      "status": "skip",
+      "elapsed_seconds": 0
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/testenv/pgtest": {
+      "status": "skip",
+      "elapsed_seconds": 0
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/admin": {
+      "status": "pass",
+      "elapsed_seconds": 3.242
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/audit": {
+      "status": "pass",
+      "elapsed_seconds": 6.498
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/mcpserver": {
+      "status": "pass",
+      "elapsed_seconds": 8.906
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/api": {
+      "status": "pass",
+      "elapsed_seconds": 11.489
+    },
+    "github.com/paulmalmquist/storage_relspace/pkg/client": {
+      "status": "pass",
+      "elapsed_seconds": 9.765
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/backup": {
+      "status": "pass",
+      "elapsed_seconds": 14.339
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/store": {
+      "status": "pass",
+      "elapsed_seconds": 13.784
+    },
+    "github.com/paulmalmquist/storage_relspace/internal/service": {
+      "status": "pass",
+      "elapsed_seconds": 42.489
+    }
+  },
+  "tests": {
+    "github.com/paulmalmquist/storage_relspace/internal/api::TestBudgets": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/cache::TestBoundedAndExpiring": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/cache::TestMissesCoalesce": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/config::TestDefaultsAndLists": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/config::TestRejections": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/config::TestProductionAccepted": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/auth::TestPolicyRules": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/auth::TestAgentContentWithheld": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/auth::TestDelegationIsIntersection": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/auth::TestOIDC": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/auth::TestDevTokens": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/auth::TestSpecValidation": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/auth::TestWildcardDelegationIsConcrete": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/api::TestHealthAndSecurityHeaders": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/admin::TestLegacyAssignment": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/audit::TestEventsCoverAllowAndDeny": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/markings::TestParseCanonicalizes": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/markings::TestParseRejects": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/markings::TestDominance": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/markings::TestCombine": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/markings::TestExportControlled": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/crypto::TestStreamRoundTrip": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/crypto::TestCiphertextHidesPlaintext": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/crypto::TestTamperingDetected": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/crypto::TestHeaderBounds": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/crypto::TestSeal": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/crypto::TestLocalKeyringRotation": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/crypto::TestGCPKMS": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/crypto::TestFIPSStatus": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/crypto::TestLegacyFormatsFailClearly": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/api::TestAuthenticationFailures": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/crypto::TestPartsFormOneStream": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestWidens": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/admin::TestLegacyAssignmentVerificationFailureMovesNothing": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/audit::TestChainsVerifyAndDetectTampering": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/api::TestBlobRoundTrip": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/admin::TestPrivilegedOperations": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestLocal": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/mcpserver::TestToolCatalog": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestRemotePipe": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/audit::TestOnlyAppAdminsReadTheAppLog": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/backup::TestExportValidateRestore": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestBlobRoundTrip": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/mcpserver::TestAgentOutsideBoundarySeesMetadataNotCUI": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/api::TestBlobIdempotencyConcealmentLimits": "pass",
+    "github.com/paulmalmquist/storage_relspace/pkg/client::TestBlobRoundTripMetadataAndMarking": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/audit::TestConcurrentWritersKeepChainsIntact": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestNothingSensitiveAtRest": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/mcpserver::TestAgentInsideBoundaryReadsCUI": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/api::TestRecordsFlow": "pass",
+    "github.com/paulmalmquist/storage_relspace/pkg/client::TestBlobStreamingAndDeletion": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/audit::TestDeliveryIsCursorBased": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/backup::TestValidateDetectsTampering": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestTamperedObjectDetectedAndAudited": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/mcpserver::TestForeignNationalCannotReachITARThroughAgent": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/api::TestDelegation": "pass",
+    "github.com/paulmalmquist/storage_relspace/pkg/client::TestRecordsCRUDQueryStaleAndSchema": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestS3": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestMarkingDowngradeInDatabaseBreaksDecryption": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/mcpserver::TestWritesAuditedWithBothIdentities": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/api::TestAdminEndpoints": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/api::TestOpenAPIContract": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestMigrateRefusesPythonEraDatabase": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/backup::TestReviewSharedRestoreCannotImportPlatformAdministrator": "pass",
+    "github.com/paulmalmquist/storage_relspace/pkg/client::TestConflictRecoveryHistoryAndUndo": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestForeignNationalCannotSeeExportControlled": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/mcpserver::TestStreamableHTTPDelegation": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/api::TestAppScopingOverHTTP": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestReviewAllAppTablesForceRLSAndDefinersPinPath": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestShredDestroysKeyAndWorkerDeletesObject": "pass",
+    "github.com/paulmalmquist/storage_relspace/pkg/client::TestLostResponseIsRecovered": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/mcpserver::TestUndoAndAppSelection": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/api::TestSharingHistoryOperationsOverHTTP": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestRuntimeRoleIsRestricted": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/backup::TestReviewSharedRestorePreservesTargetPrincipalPolicy": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestSizeLimitAbortsAndCleansUp": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/api::TestLabelsAreBounded": "pass",
+    "github.com/paulmalmquist/storage_relspace/pkg/client::TestLargeBlobThroughUploadSession": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestMissingOrMalformedContextFailsClosed": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestUploadValidation": "pass",
+    "github.com/paulmalmquist/storage_relspace/pkg/client::TestContractChangeThroughSDK": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestAppBoundary": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/backup::TestReviewRestoreRejectsForeignAppRows": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestListPagination": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestAdmission": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestHiddenRowsDoNotShapePages": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestSharingPolicies": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/backup::TestReviewRefusedRestoreDoesNotWriteObjects": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestAgentSeesMetadataNotCUIContent": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestRestrictiveAndPermissiveComposition": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/backup::TestReviewValidateRejectsForeignObjectKey": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestUploadSweepAndCommitRace": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestPolicyPlansUseIndexes": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestConcurrentUploadsWithOneOperationID": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestPoolExhaustionFailsFast": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestConcurrentPutsConverge": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/store::TestPerAppConnectionShare": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestExpiredUploadLeaseIsTakenOver": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestUploadSessionRoundTrip": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestEmptyAndAbortedSessions": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestBlobQuotaIsExactUnderConcurrency": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestRecordQuotaAndUsageAccounting": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestDeletedRecordsExpireWithTheirHistory": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestCompatibleContractChangeIsImmediate": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestMigrationAppliesDefaultsValidatesAndIndexes": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestFailedMigrationLeavesTheCollectionAlone": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestContractChangeRacesWriters": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestHistoryAndUndo": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestDeletedRecordsAreProtected": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestHistoryAuthorizedPerRevisionMarking": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestHistoryRetention": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestCollectionRules": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestRecordCRUDWithVersions": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestSchemaEnforced": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestPlaintextNeverStored": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestBlindIndexQuery": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestRowSwapDetected": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestCrossAppCiphertextSwapDetected": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestRecordMarkingRules": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestAccessFiltering": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestUncontrolledCollectionPlainStorage": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestDataKeyRotation": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestPaginationAndCursorBinding": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestControlledRecordNeverPlaintext": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestSaveResponseIsTheWrittenVersion": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestStaleDeleteAndUpdateDeleteRace": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestLostResponseRetries": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestReceiptNamespaceAndFingerprint": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestReplayAfterRevocation": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestMutationAndAuditCommitTogether": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestSchemaLoadingIsAuthorizedAndClosed": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestFiltersAreNotAnOracle": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestReviewUnknownBlobCommitPreservesCommittedObject": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestReviewUnknownPartCommitPreservesCommittedObject": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestReviewOwnerCannotLowerRecordMarking": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestReviewRetryCannotReadDeletedRecord": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestReviewOperationStatusRechecksResourceAccess": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestReviewWorkerRejectsCrossAppObjectDelete": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestDefaultPrivateAndAppBoundary": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestTeamAndAppSharing": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestGrantsAndShareSeparation": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestSharingCannotOverrideClassification": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestMembershipRevocationAndAdmins": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestDelegationInsideApps": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestWildcardDelegationDropsPrivilegedScopes": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestAuthorizerMatchesRLS": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestExplain": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestOutboxRetriesAndDeadLetters": "pass",
+    "github.com/paulmalmquist/storage_relspace/internal/service::TestWorkerIsPinnedPerApp": "pass"
+  },
+  "open_reproductions_exit": 1,
+  "expected_failing_open_reproduction_tests": [
+    "TestReviewWideningProofRejectsTightening",
+    "TestReviewConcurrentFirstReceiptsRemainReplayable",
+    "TestReviewTrimmedReceiptNeverReturnsDifferentVersion",
+    "TestReviewBlobDeleteUsesReceipt",
+    "TestReviewRecordQuotaOvershootIsAtMostSeven",
+    "TestReviewShareOnlyGranteeCanChangeVisibility",
+    "TestReviewExistingGrantCanBeChanged",
+    "TestReviewUsageDoesNotCountHiddenResources",
+    "TestReviewMigrationDoesNotDisclosePrivateRecordIDs",
+    "TestReviewUploadStatusRechecksClearance",
+    "TestReviewDeepVerifyChecksMultipartDigestList",
+    "TestReviewRuntimeCheckRejectsExtraReadAllRole",
+    "TestReviewMutationsRequireOperationID",
+    "TestReviewDeleteRequiresIfMatch",
+    "TestReviewDeadlineStartsBeforeAuthentication",
+    "TestReviewPrincipalLookupUsesAcquisitionBudget",
+    "TestReviewExportContainsNoPlaintextRecordData",
+    "TestReviewOfflineValidationRequiresCompletePartList",
+    "TestReviewRestoreRefusesSameDatabaseAcrossSchemas",
+    "TestReviewPendingSessionRestoreKeepsAcknowledgedParts"
+  ],
+  "frozen_module_binary": {
+    "fips_enabled": true,
+    "fips_enforced": true,
+    "go_version": "go1.26.10",
+    "module_version": "v1.0.0"
+  },
+  "vet_exit": 0,
+  "staticcheck_exit": 0,
+  "govulncheck_exit": 0,
+  "typescript_tests": {
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0,
+    "example_passed": true,
+    "typecheck_passed": true,
+    "generated_types_match": true,
+    "build_passed": true
+  },
+  "load": {
+    "users": 8,
+    "duration_per_workload_seconds": 2,
+    "arrival_steps_per_second": [
+      25,
+      100
+    ],
+    "all_final_state_checks_passed": true,
+    "capacity_claim": false
+  },
+  "limitations": [
+    "Local KMS and fake cloud clients; no live Google Cloud access.",
+    "PostgreSQL executable used a first-call geteuid shim solely to start in the sandbox; PostgreSQL SQL and data handling unmodified.",
+    "Docker image and live Terraform/IAM/retention not executed."
+  ],
+  "frozen_module_suite_exit": 0,
+  "review_issue_counts": {
+    "High_fixed": 6,
+    "Medium_open": 12
+  }
+}
