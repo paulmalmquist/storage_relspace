@@ -253,6 +253,8 @@ func (w *Worker) dispatch(ctx context.Context, s *WorkerStats) error {
 
 func (w *Worker) execute(ctx context.Context, j job) error {
 	switch j.Kind {
+	case "object.orphan_delete":
+		return w.deleteOrphan(ctx, j)
 	case "object.delete":
 		var p objectDeletePayload
 		if err := json.Unmarshal(j.Payload, &p); err != nil {

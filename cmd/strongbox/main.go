@@ -59,9 +59,9 @@ func main() {
 		"init": cmdInit, "db": cmdDB, "serve": cmdServe, "worker": cmdWorker, "mcp": cmdMCP, "admin": cmdAdmin,
 		"principal": cmdPrincipal, "token": cmdToken, "usage": cmdUsage, "audit-verify": cmdAuditVerify, "fips-check": cmdFIPS,
 		"keyring": cmdKeyring, "gc": cmdGC, "export": cmdExport, "validate-export": cmdValidateExport, "restore": cmdRestore,
-		"inventory": cmdInventory,
-		"openapi":   func(context.Context, []string) error { _, err := os.Stdout.Write(api.OpenAPI); return err },
-		"version":   func(context.Context, []string) error { fmt.Println(version); return nil },
+		"inventory": cmdInventory, "reconcile": cmdReconcile, "restore-drill": cmdRestoreDrill,
+		"openapi": func(context.Context, []string) error { _, err := os.Stdout.Write(api.OpenAPI); return err },
+		"version": func(context.Context, []string) error { fmt.Println(version); return nil },
 	} {
 		commands[k] = v
 	}

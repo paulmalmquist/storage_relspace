@@ -76,15 +76,19 @@ func (l *Local) path(key string) (string, error) {
 	if strings.Contains(key, "/") {
 		return filepath.Join(l.root, filepath.FromSlash(key)), nil
 	}
+	if len(key) < 2 {
+		return "", errors.New("legacy local keys must have at least two characters")
+	}
 	return filepath.Join(l.root, key[len(key)-2:], key), nil // pre-app-scoping layout
 }
 
 type localWriter struct {
 	f     *os.File
 	final string
+	ctx   context.Context
 }
 
-func (l *Local) OpenWriter(_ context.Context, key string) (Writer, error) {
+func (l *Local) OpenWriter(ctx context.Context, key string) (Writer, error) {
 	final, err := l.path(key)
 	if err != nil {
 		return nil, err
@@ -99,7 +103,7 @@ func (l *Local) OpenWriter(_ context.Context, key string) (Writer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &localWriter{f: f, final: final}, nil
+	return &localWriter{f: f, final: final, ctx: ctx}, nil
 }
 
 func (w *localWriter) Write(p []byte) (int, error) { return w.f.Write(p) }
@@ -111,7 +115,16 @@ func (w *localWriter) Commit() error {
 	if err := w.f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(w.f.Name(), w.final)
+	err := localLock(w.ctx, w.final, func() error {
+		if err := os.Link(w.f.Name(), w.final); err != nil {
+			return err
+		}
+		return os.Remove(w.f.Name())
+	})
+	if err != nil {
+		_ = os.Remove(w.f.Name())
+	}
+	return err
 }
 
 func (w *localWriter) Abort() error {
@@ -131,15 +144,16 @@ func (l *Local) Read(_ context.Context, key string) (io.ReadCloser, error) {
 	return f, err
 }
 
-func (l *Local) Delete(_ context.Context, key string) error {
-	p, err := l.path(key)
+func (l *Local) Delete(ctx context.Context, key string) error {
+	path, err := l.path(key)
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	err = localLock(ctx, path, func() error { return os.Remove(path) })
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	return nil
+	return err
 }
 
 func (l *Local) Describe() map[string]any {
@@ -303,7 +317,7 @@ func NewS3WithClient(c S3Client, bucket, prefix, endpoint string) *S3 {
 		endpoint = "aws"
 	}
 	return &S3{c: c, bucket: bucket, prefix: prefix,
-		info: map[string]any{"backend": "s3", "bucket": bucket, "endpoint": endpoint, "production_safe": true}}
+		info: map[string]any{"backend": "s3", "bucket": bucket, "endpoint": endpoint, "prefix": prefix, "production_safe": true}}
 }
 
 type s3Writer struct {
