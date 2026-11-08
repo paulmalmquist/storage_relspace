@@ -104,3 +104,79 @@ func TestReviewUnknownBlobCommitPreservesCommittedObject(t *testing.T) {
 		t.Fatalf("unknown COMMIT destroyed a committed object's ciphertext: %v, body %q", err, got)
 	}
 }
+
+type reviewArmBackend struct {
+	store.Backend
+	armed *atomic.Bool
+}
+type reviewArmWriter struct {
+	store.Writer
+	armed *atomic.Bool
+}
+
+func (b *reviewArmBackend) OpenWriter(ctx context.Context, key string) (store.Writer, error) {
+	w, err := b.Backend.OpenWriter(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return &reviewArmWriter{Writer: w, armed: b.armed}, nil
+}
+func (w *reviewArmWriter) Commit() error {
+	if err := w.Writer.Commit(); err != nil {
+		return err
+	}
+	w.armed.Store(true)
+	return nil
+}
+
+func TestReviewUnknownPartCommitPreservesCommittedObject(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	cfg, err := pgxpool.ParseConfig(env.RuntimeURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.TLSConfig = nil
+	cfg.ConnConfig.Fallbacks = nil
+	cfg.ConnConfig.RuntimeParams["search_path"] = env.Schema
+	cfg.MaxConns = 1
+	var armed atomic.Bool
+	cfg.ConnConfig.DialFunc = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return &reviewDropCommitConn{Conn: c, reader: bufio.NewReader(c), armed: &armed}, nil
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	c, err := service.Build(ctx, env.C.Config, service.Overrides{Pool: pool, KMS: env.C.KMS, Backend: &reviewArmBackend{Backend: env.C.Backend, armed: &armed}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := env.Ctx(t, "engineer@rel.test")
+	body := []byte("committed upload part")
+	sess, err := c.Blobs.CreateSession(ctx, user, service.BlobInput{Marking: cuiExpt, DeclaredSize: int64(len(body))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Blobs.PutPart(ctx, user, sess.ID, 1, bytes.NewReader(body)); !errors.Is(err, store.ErrCommitUnknown) {
+		t.Fatalf("want unknown commit, got %v", err)
+	}
+	var count int
+	if err := env.Migrator.QueryRow(ctx, `SELECT count(*) FROM blob_parts WHERE blob_id=$1`, sess.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("test did not commit part: %d", count)
+	}
+	if _, err := env.C.Blobs.CompleteSession(ctx, user, sess.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, got, err := env.C.Blobs.ReadAll(ctx, user, sess.ID)
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("unknown COMMIT destroyed a referenced part: %v, body %q", err, got)
+	}
+}
