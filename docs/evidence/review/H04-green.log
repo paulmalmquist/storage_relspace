@@ -1,0 +1,6 @@
+=== RUN   TestReviewUnknownBlobCommitPreservesCommittedObject
+--- PASS: TestReviewUnknownBlobCommitPreservesCommittedObject (0.30s)
+=== RUN   TestReviewUnknownPartCommitPreservesCommittedObject
+--- PASS: TestReviewUnknownPartCommitPreservesCommittedObject (0.46s)
+PASS
+ok  	github.com/paulmalmquist/storage_relspace/internal/service	1.825s

@@ -1,0 +1,9 @@
+=== RUN   TestReviewUnknownBlobCommitPreservesCommittedObject
+    review_commit_test.go:104: unknown COMMIT destroyed a committed object's ciphertext: not_found: object missing from blob store, body ""
+--- FAIL: TestReviewUnknownBlobCommitPreservesCommittedObject (0.36s)
+=== RUN   TestReviewUnknownPartCommitPreservesCommittedObject
+    review_commit_test.go:180: unknown COMMIT destroyed a referenced part: not_found: object missing from blob store, body ""
+--- FAIL: TestReviewUnknownPartCommitPreservesCommittedObject (0.41s)
+FAIL
+FAIL	github.com/paulmalmquist/storage_relspace/internal/service	0.839s
+FAIL
