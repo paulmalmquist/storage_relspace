@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/paulmalmquist/storage_relspace/internal/api"
 	"github.com/paulmalmquist/storage_relspace/internal/auth"
 	"github.com/paulmalmquist/storage_relspace/internal/testenv"
@@ -58,5 +59,33 @@ func TestReviewDeadlineStartsBeforeAuthentication(t *testing.T) {
 	}
 	if !v.observed {
 		t.Fatal("authentication and principal-pool acquisition run without the configured request deadline")
+	}
+}
+
+func TestReviewPrincipalLookupUsesAcquisitionBudget(t *testing.T) {
+	env := testenv.New(t)
+	env.C.Config.RequestTimeout = 25 * time.Millisecond
+	env.C.DB.AcquireTimeout = 20 * time.Millisecond
+	var held []*pgxpool.Conn
+	for i := int32(0); i < env.Runtime.Config().MaxConns; i++ {
+		conn, err := env.Runtime.Acquire(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, conn)
+	}
+	defer func() {
+		for _, c := range held {
+			c.Release()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, app, nil).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+testenv.Token(t, "engineer@rel.test"))
+	rec := httptest.NewRecorder()
+	api.New(env.C).ServeHTTP(rec, req)
+	if rec.Code != 503 {
+		t.Fatalf("pool-exhausted authentication ignored the 20ms acquisition budget and returned %d: %s", rec.Code, rec.Body.String())
 	}
 }
