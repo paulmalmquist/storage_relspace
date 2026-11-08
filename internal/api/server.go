@@ -45,14 +45,16 @@ const requestIDKey ctxKey = 1
 var ridRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,64}$`)
 
 type Server struct {
-	c      *service.Container
-	mux    *http.ServeMux
-	budget *budget
+	c         *service.Container
+	mux       *http.ServeMux
+	budget    *budget
+	authSlots chan struct{}
 }
 
 // New returns the API handler with middleware applied.
 func New(c *service.Container) http.Handler {
-	s := &Server{c: c, mux: http.NewServeMux(), budget: newBudget(c.Config)}
+	s := &Server{c: c, mux: http.NewServeMux(), budget: newBudget(c.Config),
+		authSlots: make(chan struct{}, max(1, int(c.Pool.Config().MaxConns)/4))}
 	s.routes()
 	return s.middleware(s.mux)
 }
@@ -173,6 +175,9 @@ func (s *Server) app(h handler) handler {
 		}
 		c.App = app
 		c.OpID = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		if r.Method != "GET" && r.Method != "HEAD" && !strings.HasSuffix(r.Pattern, "/query") && !strings.HasSuffix(r.Pattern, "/explain") && !service.ValidOpID(c.OpID) {
+			return errs.Invalid("a valid Idempotency-Key is required for mutations")
+		}
 		return h(w, r, c)
 	}
 }
@@ -184,6 +189,8 @@ type statusWriter struct {
 	status int
 	bytes  int64
 }
+
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *statusWriter) WriteHeader(code int) { w.status = code; w.ResponseWriter.WriteHeader(code) }
 func (w *statusWriter) Write(p []byte) (int, error) {
@@ -248,11 +255,36 @@ type handler func(w http.ResponseWriter, r *http.Request, c service.Ctx) error
 // authed authenticates (including delegation) and maps returned errors to problem responses.
 func (s *Server) authed(h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		p, err := s.authenticate(r)
+		timeout := s.c.Config.RequestTimeout
+		if streaming[r.Pattern] {
+			timeout = s.c.Config.StreamTimeout
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		if deadline, ok := ctx.Deadline(); ok {
+			controller := http.NewResponseController(w)
+			_ = controller.SetReadDeadline(deadline)
+			_ = controller.SetWriteDeadline(deadline)
+		}
+		r = r.WithContext(ctx)
+		p, err := func() (*auth.Principal, error) {
+			actx, cancel := context.WithTimeout(ctx, s.c.Config.RequestTimeout)
+			defer cancel()
+			select {
+			case s.authSlots <- struct{}{}:
+				defer func() { <-s.authSlots }()
+			case <-actx.Done():
+				return nil, errs.Unavailable("authentication busy; retry shortly")
+			}
+			return s.authenticate(r.WithContext(actx))
+		}()
 		if err == nil {
 			err = h(w, r, service.Ctx{Principal: p, RequestID: requestID(r)})
 		}
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				err = errs.Unavailable("request timed out; resolve mutations by their operation ID").Wrap(err)
+			}
 			s.fail(w, r, err)
 		}
 	}
@@ -366,7 +398,7 @@ var titles = map[string]string{
 	"payload_too_large": "PayloadTooLarge", "validation_failed": "ValidationFailed",
 	"precondition_required": "PreconditionRequired", "integrity_violation": "IntegrityViolation",
 	"configuration_error": "ConfigurationError", "internal_error": "InternalError", "rate_limited": "TooManyRequests",
-	"unavailable": "ServiceUnavailable", "quota_exceeded": "QuotaExceeded", "idempotency_key_reused": "IdempotencyKeyReused",
+	"result_expired": "ResultExpired", "unavailable": "ServiceUnavailable", "quota_exceeded": "QuotaExceeded", "idempotency_key_reused": "IdempotencyKeyReused",
 	"operation_in_progress": "OperationInProgress", "upload_expired": "UploadExpired", "upload_incomplete": "UploadIncomplete",
 	"unique_violation": "UniqueViolation", "migration_in_progress": "MigrationInProgress", "migration_finished": "MigrationFinished",
 }

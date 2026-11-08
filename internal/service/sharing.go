@@ -84,7 +84,14 @@ func (s *Sharing) PutMember(ctx context.Context, c Ctx, subject, role string) er
 		if err := s.requireAppAdmin(ctx, tx, c, a, subject); err != nil {
 			return err
 		}
-		if p, err := s.Registry.Get(ctx, subject); err != nil || p == nil {
+		replay, err := s.operations.claim(ctx, tx, c, Operation{Type: "member.set", Target: subject, Payload: role}, 0, "")
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			return nil
+		}
+		if p, err := s.Registry.GetWith(ctx, tx, subject); err != nil || p == nil {
 			if err == nil {
 				err = errs.Invalid("unknown principal %s", subject)
 			}
@@ -97,7 +104,10 @@ func (s *Sharing) PutMember(ctx context.Context, c Ctx, subject, role string) er
 			ON CONFLICT (app, subject) DO UPDATE SET role = EXCLUDED.role`, c.App, subject, role, c.Principal.Subject); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, c, auth.AppManage, "app_member", subject, "allow", "member role set to "+role, nil, nil)
+		if err := s.note(ctx, tx, c, auth.AppManage, "app_member", subject, "allow", "member role set to "+role, nil, nil); err != nil {
+			return err
+		}
+		return s.operations.complete(ctx, tx, c, "app_member", subject, 0, nil)
 	})
 }
 
@@ -106,7 +116,20 @@ func (s *Sharing) RemoveMember(ctx context.Context, c Ctx, subject string) error
 		if err := s.requireAppAdmin(ctx, tx, c, a, subject); err != nil {
 			return err
 		}
+		replay, err := s.operations.claim(ctx, tx, c, Operation{Type: "member.remove", Target: subject}, 0, "")
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			return nil
+		}
 		if err := s.keepAnAdmin(ctx, tx, c.App, subject, ""); err != nil {
+			return err
+		}
+		if err := s.operations.complete(ctx, tx, c, "app_member", subject, 0, nil); err != nil {
+			return err
+		}
+		if err := s.note(ctx, tx, c, auth.AppManage, "app_member", subject, "allow", "member removed", nil, nil); err != nil {
 			return err
 		}
 		tag, err := tx.Exec(ctx, `DELETE FROM app_members WHERE app = $1 AND subject = $2`, c.App, subject)
@@ -119,7 +142,7 @@ func (s *Sharing) RemoveMember(ctx context.Context, c Ctx, subject string) error
 		if _, err := tx.Exec(ctx, `DELETE FROM team_members WHERE app = $1 AND subject = $2`, c.App, subject); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, c, auth.AppManage, "app_member", subject, "allow", "member removed", nil, nil)
+		return nil
 	})
 }
 
@@ -162,6 +185,14 @@ func (s *Sharing) CreateTeam(ctx context.Context, c Ctx, name string) (*Team, er
 		if !a.AtLeast("member") {
 			return s.deny(c, auth.TeamManage, "team", "", nil, "app role viewer", errs.Forbidden("viewers cannot create teams"))
 		}
+		replay, err := s.operations.claim(ctx, tx, c, Operation{Type: "team.create", Target: "teams", Payload: name}, 0, "")
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			out = &Team{}
+			return decodeOutcome(replay, out)
+		}
 		id := store.NewID("tm")
 		tag, err := tx.Exec(ctx, `INSERT INTO teams (app, id, name, created_by) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
 			c.App, id, name, c.Principal.Subject)
@@ -177,7 +208,10 @@ func (s *Sharing) CreateTeam(ctx context.Context, c Ctx, name string) (*Team, er
 		}
 		out = &Team{ID: id, Name: name, CreatedBy: c.Principal.Subject, CreatedAt: time.Now().UTC(),
 			Members: map[string]string{c.Principal.Subject: "admin"}}
-		return s.note(ctx, tx, c, auth.TeamManage, "team", id, "allow", "team created", nil, nil)
+		if err := s.note(ctx, tx, c, auth.TeamManage, "team", id, "allow", "team created", nil, nil); err != nil {
+			return err
+		}
+		return s.operations.complete(ctx, tx, c, "team", id, 0, outcome(out))
 	})
 	return out, err
 }
@@ -226,11 +260,21 @@ func (s *Sharing) PutTeamMember(ctx context.Context, c Ctx, team, subject, role 
 		if !member {
 			return errs.Invalid("%s is not a member of this app", subject)
 		}
+		replay, err := s.operations.claim(ctx, tx, c, Operation{Type: "team.member.set", Target: team + "/" + subject, Payload: role}, 0, "")
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			return nil
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO team_members (app, team_id, subject, role, added_by) VALUES ($1,$2,$3,$4,$5)
 			ON CONFLICT (app, team_id, subject) DO UPDATE SET role = EXCLUDED.role`, c.App, team, subject, role, c.Principal.Subject); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, c, auth.TeamManage, "team", team, "allow", "team member "+subject+" set to "+role, nil, nil)
+		if err := s.note(ctx, tx, c, auth.TeamManage, "team", team, "allow", "team member "+subject+" set to "+role, nil, nil); err != nil {
+			return err
+		}
+		return s.operations.complete(ctx, tx, c, "team", team, 0, nil)
 	})
 }
 
@@ -248,6 +292,13 @@ func (s *Sharing) RemoveTeamMember(ctx context.Context, c Ctx, team, subject str
 				return err
 			}
 		}
+		replay, err := s.operations.claim(ctx, tx, c, Operation{Type: "team.member.remove", Target: team + "/" + subject}, 0, "")
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			return nil
+		}
 		tag, err := tx.Exec(ctx, `DELETE FROM team_members WHERE app = $1 AND team_id = $2 AND subject = $3`, c.App, team, subject)
 		if err != nil {
 			return err
@@ -255,7 +306,10 @@ func (s *Sharing) RemoveTeamMember(ctx context.Context, c Ctx, team, subject str
 		if tag.RowsAffected() == 0 {
 			return errs.NotFound("not a team member")
 		}
-		return s.note(ctx, tx, c, auth.TeamManage, "team", team, "allow", "team member "+subject+" removed", nil, nil)
+		if err := s.note(ctx, tx, c, auth.TeamManage, "team", team, "allow", "team member "+subject+" removed", nil, nil); err != nil {
+			return err
+		}
+		return s.operations.complete(ctx, tx, c, "team", team, 0, nil)
 	})
 }
 
@@ -355,6 +409,13 @@ func (s *Sharing) SetVisibility(ctx context.Context, c Ctx, ref ResourceRef, vis
 		if _, err := s.requireShare(ctx, tx, c, a, ref, PermShare); err != nil {
 			return err
 		}
+		replay, err := s.operations.claim(ctx, tx, c, Operation{Type: "sharing.visibility", Target: ref.Kind + "/" + ref.Collection + "/" + ref.ID, Payload: []string{visibility, team}}, 0, "")
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			return nil
+		}
 		var teamID *string
 		switch visibility {
 		case "private", "app":
@@ -373,15 +434,18 @@ func (s *Sharing) SetVisibility(ctx context.Context, c Ctx, ref ResourceRef, vis
 		default:
 			return errs.Invalid("visibility must be private, team or app")
 		}
-		table := "records"
-		if ref.Kind == "blob" {
-			table = "blobs"
-		}
-		if _, err := tx.Exec(ctx, `UPDATE `+table+` SET visibility = $3, team_id = $4 WHERE app = $1 AND id = $2`,
-			c.App, ref.ID, visibility, teamID); err != nil {
+		var changed bool
+		if err := tx.QueryRow(ctx, `SELECT sb_set_visibility($1,$2,$3,$4)`, ref.Kind, ref.ID, visibility, teamID).Scan(&changed); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, c, shareAction(ref.Kind), ref.Kind, ref.ID, "allow", "visibility set to "+visibility, nil, nil)
+		if !changed {
+			return errs.NotFound("resource not found")
+		}
+
+		if err := s.note(ctx, tx, c, shareAction(ref.Kind), ref.Kind, ref.ID, "allow", "visibility set to "+visibility, nil, nil); err != nil {
+			return err
+		}
+		return s.operations.complete(ctx, tx, c, ref.Kind, ref.ID, 0, nil)
 	})
 }
 
@@ -402,6 +466,18 @@ func (s *Sharing) AddGrant(ctx context.Context, c Ctx, ref ResourceRef, in Grant
 		res, err := s.requireShare(ctx, tx, c, a, ref, need)
 		if err != nil {
 			return err
+		}
+		opType := "sharing.grant"
+		if in.CanShare {
+			opType = "sharing.delegate"
+		}
+		replay, err := s.operations.claim(ctx, tx, c, Operation{Type: opType, Target: ref.Kind + "/" + ref.Collection + "/" + ref.ID, Payload: in}, 0, "")
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			out = &Grant{}
+			return decodeOutcome(replay, out)
 		}
 		if in.Subject != "" {
 			var member bool
@@ -424,14 +500,16 @@ func (s *Sharing) AddGrant(ctx context.Context, c Ctx, ref ResourceRef, in Grant
 			resource_owner, granted_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 			ON CONFLICT (app, (coalesce(record_id, blob_id)), (coalesce(subject, '')), (coalesce(team_id, '')))
 			DO UPDATE SET role = EXCLUDED.role, can_share = EXCLUDED.can_share
-			RETURNING id, created_at`, g.ID, c.App, recordID, blobID, g.Subject, g.TeamID, g.Role, g.CanShare, res.Owner,
-			c.Principal.Subject).Scan(&g.ID, &g.CreatedAt)
+			RETURNING id, created_at, granted_by`, g.ID, c.App, recordID, blobID, g.Subject, g.TeamID, g.Role, g.CanShare, res.Owner,
+			c.Principal.Subject).Scan(&g.ID, &g.CreatedAt, &g.GrantedBy)
 		if err != nil {
 			return err
 		}
 		out = g
-		return s.note(ctx, tx, c, shareAction(ref.Kind), ref.Kind, ref.ID, "allow", "granted "+in.Role, nil,
-			map[string]any{"grant": g.ID, "subject": in.Subject, "team_id": in.TeamID, "can_share": in.CanShare})
+		if err := s.note(ctx, tx, c, shareAction(ref.Kind), ref.Kind, ref.ID, "allow", "granted "+in.Role, nil, map[string]any{"grant": g.ID, "subject": in.Subject, "team_id": in.TeamID, "can_share": in.CanShare}); err != nil {
+			return err
+		}
+		return s.operations.complete(ctx, tx, c, ref.Kind, ref.ID, 0, outcome(g))
 	})
 	return out, err
 }
@@ -462,6 +540,13 @@ func (s *Sharing) RemoveGrant(ctx context.Context, c Ctx, ref ResourceRef, grant
 		if _, err := s.requireShare(ctx, tx, c, a, ref, PermShare); err != nil {
 			return err
 		}
+		replay, err := s.operations.claim(ctx, tx, c, Operation{Type: "sharing.revoke", Target: ref.Kind + "/" + ref.Collection + "/" + ref.ID, Payload: grantID}, 0, "")
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			return nil
+		}
 		col := "record_id"
 		if ref.Kind == "blob" {
 			col = "blob_id"
@@ -473,7 +558,10 @@ func (s *Sharing) RemoveGrant(ctx context.Context, c Ctx, ref ResourceRef, grant
 		if tag.RowsAffected() == 0 {
 			return errs.NotFound("grant not found")
 		}
-		return s.note(ctx, tx, c, shareAction(ref.Kind), ref.Kind, ref.ID, "allow", "grant revoked", nil, map[string]any{"grant": grantID})
+		if err := s.note(ctx, tx, c, shareAction(ref.Kind), ref.Kind, ref.ID, "allow", "grant revoked", nil, map[string]any{"grant": grantID}); err != nil {
+			return err
+		}
+		return s.operations.complete(ctx, tx, c, ref.Kind, ref.ID, 0, nil)
 	})
 }
 
@@ -509,7 +597,7 @@ func (s *Sharing) Explain(ctx context.Context, c Ctx, subject string, ref Resour
 			}
 			return err
 		}
-		p, err := s.Registry.Get(ctx, subject)
+		p, err := s.Registry.GetWith(ctx, tx, subject)
 		if err != nil {
 			return err
 		}

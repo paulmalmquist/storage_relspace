@@ -309,7 +309,10 @@ func TestContractChangeThroughSDK(t *testing.T) {
 	if _, err := h.env.C.Worker.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	m, err := eng.GetMigration(ctx, "tasks", ch.Migration.ID)
+	if _, err := eng.GetMigration(ctx, "tasks", ch.Migration.ID); err == nil {
+		t.Fatal("ordinary writer read privileged migration details")
+	}
+	m, err := adm.GetMigration(ctx, "tasks", ch.Migration.ID)
 	if err != nil || m.State != "succeeded" || m.Rewritten != 1 {
 		t.Fatalf("migration %+v %v", m, err)
 	}

@@ -17,6 +17,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/paulmalmquist/storage_relspace/internal/errs"
+	"github.com/paulmalmquist/storage_relspace/internal/store"
 )
 
 const All = "*"
@@ -25,8 +28,9 @@ var Scopes = map[string]bool{
 	"blobs:read": true, "blobs:write": true, "blobs:delete": true,
 	"records:read": true, "records:write": true, "records:delete": true,
 	"collections:admin": true, "audit:read": true, "principals:admin": true,
-	"apps:manage": true, // manage app membership (also requires the app's admin role)
-	"delegate":    true, // may act on behalf of another principal (X-On-Behalf-Of)
+	"apps:operate": true, // privileged aggregate operational metadata
+	"apps:manage":  true, // manage app membership (also requires the app's admin role)
+	"delegate":     true, // may act on behalf of another principal (X-On-Behalf-Of)
 }
 
 // neverDelegated are scopes an intersection never carries, even when both sides hold "*".
@@ -204,18 +208,40 @@ func upperSorted(items []string) []string {
 func dedupSorted(items []string) []string { return NewSet(items...).Sorted() }
 
 // Registry stores principals in Postgres.
-type Registry struct{ db *pgxpool.Pool }
+type Registry struct{ db *store.DB }
 
-func NewRegistry(db *pgxpool.Pool) *Registry { return &Registry{db: db} }
+func NewRegistry(pool *pgxpool.Pool) *Registry { return NewScopedRegistry(store.NewDB(pool)) }
+func NewScopedRegistry(db *store.DB) *Registry { return &Registry{db: db} }
+
+type RegistryReader interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+func (r *Registry) run(ctx context.Context, fn func(pgx.Tx) error) error {
+	err := r.db.Run(ctx, store.Scope{Subject: "system:registry", Actor: "system:registry", Mode: store.ModeGlobal}, fn)
+	var pg *pgconn.PgError
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
+		errors.As(err, &pg) && (pg.Code == "57014" || pg.Code == "40001" || pg.Code == "40P01") {
+		return errs.Unavailable("principal registry unavailable; retry shortly").Wrap(err)
+	}
+	return err
+}
 
 // Get returns nil for unknown or disabled principals.
 func (r *Registry) Get(ctx context.Context, subject string) (*Principal, error) {
+	var out *Principal
+	err := r.run(ctx, func(tx pgx.Tx) error { var err error; out, err = r.GetWith(ctx, tx, subject); return err })
+	return out, err
+}
+
+func (r *Registry) GetWith(ctx context.Context, q RegistryReader, subject string) (*Principal, error) {
 	var (
 		kind, name             string
 		scopes, cats, ldcs     []string
 		us, cui, llm, disabled bool
 	)
-	err := r.db.QueryRow(ctx, `SELECT kind, coalesce(display_name, ''), scopes, us_person, cui_access,
+	err := q.QueryRow(ctx, `SELECT kind, coalesce(display_name, ''), scopes, us_person, cui_access,
 		cui_categories, dissemination, llm_boundary_authorized, disabled FROM principals WHERE subject = $1`, subject).
 		Scan(&kind, &name, &scopes, &us, &cui, &cats, &ldcs, &llm, &disabled)
 	if errors.Is(err, pgx.ErrNoRows) || disabled {
@@ -236,7 +262,9 @@ type Execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-func (r *Registry) Put(ctx context.Context, s Spec) error { return r.PutWith(ctx, r.db, s) }
+func (r *Registry) Put(ctx context.Context, s Spec) error {
+	return r.run(ctx, func(tx pgx.Tx) error { return r.PutWith(ctx, tx, s) })
+}
 
 // PutWith writes through q, so callers can commit the change with its audit event.
 func (r *Registry) PutWith(ctx context.Context, q Execer, s Spec) error {
@@ -260,7 +288,13 @@ func (r *Registry) PutWith(ctx context.Context, q Execer, s Spec) error {
 }
 
 func (r *Registry) List(ctx context.Context) ([]map[string]any, error) {
-	rows, err := r.db.Query(ctx, `SELECT subject, kind, coalesce(display_name, ''), scopes, us_person, cui_access,
+	var out []map[string]any
+	err := r.run(ctx, func(tx pgx.Tx) error { var err error; out, err = r.ListWith(ctx, tx); return err })
+	return out, err
+}
+
+func (r *Registry) ListWith(ctx context.Context, q RegistryReader) ([]map[string]any, error) {
+	rows, err := q.Query(ctx, `SELECT subject, kind, coalesce(display_name, ''), scopes, us_person, cui_access,
 		cui_categories, dissemination, llm_boundary_authorized, disabled, created_at, updated_at
 		FROM principals ORDER BY subject`)
 	if err != nil {

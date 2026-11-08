@@ -599,7 +599,7 @@ func (s *Server) deleteRecord(w http.ResponseWriter, r *http.Request, c service.
 	if err != nil {
 		return err
 	}
-	version, err := ifMatch(r, false)
+	version, err := ifMatch(r, true)
 	if err != nil {
 		return err
 	}

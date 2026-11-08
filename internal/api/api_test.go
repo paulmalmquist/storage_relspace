@@ -15,6 +15,7 @@ import (
 
 	"github.com/paulmalmquist/storage_relspace/internal/api"
 	"github.com/paulmalmquist/storage_relspace/internal/auth"
+	"github.com/paulmalmquist/storage_relspace/internal/store"
 	"github.com/paulmalmquist/storage_relspace/internal/testenv"
 )
 
@@ -69,7 +70,7 @@ func (c *client) do(method, path string, body io.Reader, headers map[string]stri
 }
 
 func as(t *testing.T, subject string, extra ...string) map[string]string {
-	h := map[string]string{"Authorization": "Bearer " + testenv.Token(t, subject)}
+	h := map[string]string{"Authorization": "Bearer " + testenv.Token(t, subject), "Idempotency-Key": "test-" + store.NewID("op")}
 	for i := 0; i+1 < len(extra); i += 2 {
 		h[extra[i]] = extra[i+1]
 	}

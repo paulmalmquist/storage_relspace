@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -68,15 +69,20 @@ func (r *receipts) fingerprint(ctx context.Context, tx pgx.Tx, app string, op Op
 	if err != nil {
 		return nil, "", err
 	}
+	fp, err := operationFingerprint(app, op, key)
+	return fp, keyID, err
+}
+
+func operationFingerprint(app string, op Operation, key []byte) ([]byte, error) {
 	payload, err := json.Marshal(op.Payload) // map keys are sorted by encoding/json
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	digest := sha256.Sum256(payload)
 	canonical, _ := json.Marshal([]any{"strongbox/receipt/v1", app, op.Type, op.Target, op.ExpectedVersion, op.Marking, digest[:]})
 	m := hmac.New(sha256.New, key)
 	m.Write(canonical)
-	return m.Sum(nil), keyID, nil
+	return m.Sum(nil), nil
 }
 
 // claim registers c.OpID for op in tx. It returns (nil, nil) when there is no op ID, the stored
@@ -114,17 +120,26 @@ func (r *receipts) claim(ctx context.Context, tx pgx.Tx, c Ctx, op Operation, le
 		return nil, nil
 	}
 	var storedFP []byte
-	var storedType, status string
+	var storedType, status, storedKeyID string
 	var leaseUntil *time.Time
 	rc := &Receipt{OpID: c.OpID}
 	var resType, resID *string
 	var resVersion *int
-	err = tx.QueryRow(ctx, `SELECT op_type, fingerprint, status, lease_expires, resource_type, resource_id, resource_version,
+	err = tx.QueryRow(ctx, `SELECT op_type, fingerprint, fp_key_id, status, lease_expires, resource_type, resource_id, resource_version,
 		result, created_at, completed_at FROM operation_receipts WHERE app = $1 AND subject = $2 AND actor = $3 AND op_id = $4
 		FOR UPDATE`, c.App, c.Principal.Subject, c.Actor(), c.OpID).
-		Scan(&storedType, &storedFP, &status, &leaseUntil, &resType, &resID, &resVersion, &rc.Result, &rc.CreatedAt, &rc.CompletedAt)
+		Scan(&storedType, &storedFP, &storedKeyID, &status, &leaseUntil, &resType, &resID, &resVersion, &rc.Result, &rc.CreatedAt, &rc.CompletedAt)
 	if err != nil {
 		return nil, err
+	}
+	if storedKeyID != keyID {
+		key, err := r.keys.Key(ctx, tx, c.App, storedKeyID, "receipts")
+		if err != nil {
+			return nil, err
+		}
+		if fp, err = operationFingerprint(c.App, op, key); err != nil {
+			return nil, err
+		}
 	}
 	if storedType != op.Type || !hmac.Equal(storedFP, fp) {
 		return nil, errs.Coded(409, "idempotency_key_reused", "this Idempotency-Key was already used for a different operation")
@@ -159,7 +174,7 @@ func (r *receipts) claim(ctx context.Context, tx pgx.Tx, c Ctx, op Operation, le
 	return nil, errs.Coded(409, "operation_in_progress", "an operation with this Idempotency-Key is still in progress; retry later")
 }
 
-// complete marks the claimed receipt succeeded with an ID/version-only result, in the mutation's tx.
+// complete stores operation metadata (never record or attachment content) in the mutation's tx.
 func (r *receipts) complete(ctx context.Context, tx pgx.Tx, c Ctx, resType, resID string, version int, result map[string]any) error {
 	if c.OpID == "" {
 		return nil
@@ -233,21 +248,51 @@ func (r *receipts) authorize(ctx context.Context, tx pgx.Tx, c Ctx, rc *Receipt)
 	}
 	var banner string
 	var restricted, manages bool
+	var canShare bool
 	var err error
 	action := auth.RecordRead
 	switch rc.ResourceType {
 	case "record":
-		err = tx.QueryRow(ctx, `SELECT marking, deleted_at IS NOT NULL, sb_can_manage(owner, visibility, team_id)
-			FROM records WHERE app=$1 AND id=$2`, c.App, rc.ResourceID).Scan(&banner, &restricted, &manages)
+		err = tx.QueryRow(ctx, `SELECT marking, deleted_at IS NOT NULL, sb_can_manage(owner, visibility, team_id), sb_can_share('record',id,owner,visibility,team_id)
+			FROM records WHERE app=$1 AND id=$2`, c.App, rc.ResourceID).Scan(&banner, &restricted, &manages, &canShare)
 	case "blob":
 		action = auth.BlobReadMeta
 		err = tx.QueryRow(ctx, `SELECT marking, state <> 'active',
-			CASE WHEN state='pending' THEN owner=sb_ctx_subject() ELSE sb_can_manage(owner, visibility, team_id) END
-			FROM blobs WHERE app=$1 AND id=$2`, c.App, rc.ResourceID).Scan(&banner, &restricted, &manages)
+			CASE WHEN state='pending' THEN owner=sb_ctx_subject() ELSE sb_can_manage(owner, visibility, team_id) END, sb_can_share('blob',id,owner,visibility,team_id)
+			FROM blobs WHERE app=$1 AND id=$2`, c.App, rc.ResourceID).Scan(&banner, &restricted, &manages, &canShare)
 	case "collection":
 		action = auth.CollectionRead
 		err = tx.QueryRow(ctx, `SELECT marking FROM collections WHERE app=$1 AND name=$2`, c.App, rc.ResourceID).Scan(&banner)
+	case "app_member":
+		a, err := loadAccess(ctx, tx, c.App, c.Principal.Subject)
+		if err != nil {
+			return err
+		}
+		if a == nil || a.Role != "admin" {
+			return errs.NotFound("operation not found")
+		}
+		_, err = r.core.check(ctx, tx, c, auth.AppManage, "app_member", rc.ResourceID, nil, checkOpts{skipAllow: true})
+		return err
+	case "team":
+		var created string
+		if err := tx.QueryRow(ctx, `SELECT created_by FROM teams WHERE app=$1 AND id=$2`, c.App, rc.ResourceID).Scan(&created); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errs.NotFound("operation not found")
+			}
+			return err
+		}
+		a, err := loadAccess(ctx, tx, c.App, c.Principal.Subject)
+		if err != nil {
+			return err
+		}
+		if a == nil || a.Role != "admin" && a.Teams[rc.ResourceID] != "admin" && created != c.Principal.Subject {
+			return errs.NotFound("operation not found")
+		}
+		return nil
 	default:
+		return errs.NotFound("operation not found")
+	}
+	if err == nil && strings.HasPrefix(rc.Type, "sharing.") && (!canShare || rc.Type == "sharing.delegate" && !manages) {
 		return errs.NotFound("operation not found")
 	}
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && restricted && !manages {
@@ -262,4 +307,19 @@ func (r *receipts) authorize(ctx context.Context, tx pgx.Tx, c Ctx, rc *Receipt)
 	}
 	_, err = r.core.check(ctx, tx, c, action, rc.ResourceType, rc.ResourceID, &m, checkOpts{skipAllow: true})
 	return err
+}
+
+// decodeOutcome contains only operation metadata, never record or attachment content.
+func decodeOutcome(rc *Receipt, out any) error {
+	raw, err := json.Marshal(rc.Result)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, out)
+}
+func outcome(v any) map[string]any {
+	raw, _ := json.Marshal(v)
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	return m
 }

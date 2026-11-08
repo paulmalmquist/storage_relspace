@@ -758,6 +758,13 @@ func (b *Blobs) List(ctx context.Context, c Ctx, limit int, cur string) ([]*Blob
 // versions may persist until their own expiry (docs/RETENTION.md).
 func (b *Blobs) Delete(ctx context.Context, c Ctx, id string, shred bool) error {
 	return b.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
+		replay, err := b.receipts.claim(ctx, tx, c, Operation{Type: "blob.delete", Target: id, Payload: map[string]any{"shred": shred}}, 0, "")
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			return nil
+		}
 		r, m, err := b.row(ctx, tx, c.App, id)
 		if err != nil {
 			return err
@@ -800,6 +807,9 @@ func (b *Blobs) Delete(ctx context.Context, c Ctx, id string, shred bool) error 
 		if shred {
 			reason = "blob shredded: wrapped data key destroyed; object deletion queued"
 		}
-		return b.note(ctx, tx, c, action, "blob", id, "allow", reason, &m, nil)
+		if err := b.note(ctx, tx, c, action, "blob", id, "allow", reason, &m, nil); err != nil {
+			return err
+		}
+		return b.receipts.complete(ctx, tx, c, "blob", id, 0, nil)
 	})
 }

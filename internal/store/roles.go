@@ -110,6 +110,35 @@ func CheckRuntime(ctx context.Context, pool *pgxpool.Pool) (RoleReport, error) {
 	if err != nil {
 		return r, err
 	}
+	var extraRoles []string
+	if err := pool.QueryRow(ctx, `SELECT coalesce(array_agg(rolname ORDER BY rolname),'{}') FROM pg_roles
+		WHERE rolname <> current_user AND rolname <> $1 AND pg_has_role(current_user,oid,'MEMBER')`,
+		RuntimeRole).Scan(&extraRoles); err != nil {
+		return r, err
+	}
+	if len(extraRoles) > 0 {
+		r.Problems = append(r.Problems, "unapproved role memberships: "+strings.Join(extraRoles, ", "))
+	}
+	var ownership, directGrants int
+	if err := pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM pg_shdepend WHERE refclassid='pg_authid'::regclass
+		 AND refobjid=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND deptype='o'
+		 AND dbid IN (0,(SELECT oid FROM pg_database WHERE datname=current_database()))),
+		(SELECT count(*) FROM (
+		 SELECT c.relacl AS acl FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema'
+		 UNION ALL SELECT a.attacl FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
+		 JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND NOT a.attisdropped
+		 UNION ALL SELECT p.proacl FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema'
+		 UNION ALL SELECT nspacl FROM pg_namespace WHERE nspname !~ '^pg_' AND nspname<>'information_schema') grants,
+		 LATERAL aclexplode(grants.acl) a WHERE a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user))`).Scan(&ownership, &directGrants); err != nil {
+		return r, err
+	}
+	if ownership > 0 {
+		r.Problems = append(r.Problems, "login owns database objects")
+	}
+	if directGrants > 0 {
+		r.Problems = append(r.Problems, "login has direct schema/object grants outside strongbox_runtime")
+	}
 	add := func(cond bool, msg string) {
 		if cond {
 			r.Problems = append(r.Problems, msg)

@@ -467,7 +467,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** A contract migration's progress */
+        /**
+         * A contract migration's progress
+         * @description Requires the app admin role, apps:operate, and clearance for every marking in the collection. Returns privileged app-wide job metadata.
+         */
         get: operations["getMigration"];
         put?: never;
         post?: never;
@@ -808,6 +811,11 @@ export interface components {
             max_blobs?: number | null;
             max_records?: number | null;
             max_record_bytes?: number | null;
+            /**
+             * @description Counts include only resources currently visible under sharing and classification policy; quota limits are app-wide.
+             * @enum {string}
+             */
+            scope: "visible";
         };
         PrincipalIn: {
             /** @enum {string} */
@@ -1073,6 +1081,7 @@ export interface components {
             /** Format: date-time */
             updated_at?: string;
             finished_at?: string | null;
+            marking?: string;
         };
         ContractChange: {
             collection: components["schemas"]["CollectionOut"];
@@ -1570,9 +1579,11 @@ export interface operations {
     putMember: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
@@ -1609,9 +1620,11 @@ export interface operations {
     removeMember: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
@@ -1674,9 +1687,11 @@ export interface operations {
     createTeam: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
@@ -1711,9 +1726,11 @@ export interface operations {
     putTeamMember: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
@@ -1751,9 +1768,11 @@ export interface operations {
     removeTeamMember: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
@@ -1834,7 +1853,7 @@ export interface operations {
                 /** @description Team ID when visibility is team */
                 "X-Strongbox-Team"?: components["parameters"]["Team"];
                 /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
             };
@@ -1883,9 +1902,9 @@ export interface operations {
     createUpload: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
             };
@@ -1969,9 +1988,11 @@ export interface operations {
     abortUpload: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
@@ -2002,9 +2023,11 @@ export interface operations {
     putUploadPart: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
@@ -2044,9 +2067,9 @@ export interface operations {
     completeUpload: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
             };
@@ -2161,9 +2184,9 @@ export interface operations {
                 /** @description Also destroy the wrapped data key */
                 shred?: components["parameters"]["shred"];
             };
-            header?: {
+            header: {
                 /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
             };
@@ -2230,9 +2253,11 @@ export interface operations {
     setBlobSharing: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
@@ -2302,9 +2327,11 @@ export interface operations {
     addBlobGrant: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
@@ -2340,9 +2367,11 @@ export interface operations {
     removeBlobGrant: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
@@ -2406,9 +2435,9 @@ export interface operations {
     createCollection: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
             };
@@ -2479,9 +2508,9 @@ export interface operations {
     changeContract: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
             };
@@ -2600,9 +2629,11 @@ export interface operations {
     cancelMigration: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
@@ -2637,9 +2668,9 @@ export interface operations {
     createRecord: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
             };
@@ -2774,7 +2805,7 @@ export interface operations {
                 /** @description Current ETag, e.g. "v3" */
                 "If-Match": components["parameters"]["IfMatchRequired"];
                 /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
             };
@@ -2824,11 +2855,11 @@ export interface operations {
                 /** @description Remove the record and its history */
                 purge?: components["parameters"]["purge"];
             };
-            header?: {
+            header: {
                 /** @description Current ETag, e.g. "v3" */
-                "If-Match"?: components["parameters"]["IfMatch"];
+                "If-Match": components["parameters"]["IfMatchRequired"];
                 /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
             };
@@ -2857,6 +2888,7 @@ export interface operations {
             409: components["responses"]["Conflict"];
             412: components["responses"]["PreconditionFailed"];
             422: components["responses"]["Invalid"];
+            428: components["responses"]["PreconditionRequired"];
             429: components["responses"]["TooMany"];
             503: components["responses"]["Unavailable"];
         };
@@ -2948,7 +2980,7 @@ export interface operations {
                 /** @description Current ETag, e.g. "v3" */
                 "If-Match": components["parameters"]["IfMatchRequired"];
                 /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
             };
@@ -2993,9 +3025,11 @@ export interface operations {
     setRecordSharing: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
@@ -3069,9 +3103,11 @@ export interface operations {
     addRecordGrant: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
@@ -3109,9 +3145,11 @@ export interface operations {
     removeRecordGrant: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 /** @description User token when a registered app client acts for a member; access is the intersection of both. */
                 "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
             path: {
                 /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */

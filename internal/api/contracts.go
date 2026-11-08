@@ -59,6 +59,7 @@ func (s *Server) getMigration(w http.ResponseWriter, r *http.Request, c service.
 	if err != nil {
 		return err
 	}
+	w.Header().Set(MarkingHeader, m.Marking)
 	writeJSON(w, 200, m)
 	return nil
 }
@@ -68,6 +69,7 @@ func (s *Server) cancelMigration(w http.ResponseWriter, r *http.Request, c servi
 	if err != nil {
 		return err
 	}
+	w.Header().Set(MarkingHeader, m.Marking)
 	writeJSON(w, 200, m)
 	return nil
 }

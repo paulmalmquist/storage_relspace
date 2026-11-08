@@ -51,7 +51,8 @@ func (r *Records) revision(ctx context.Context, tx pgx.Tx, c Ctx, col *Collectio
 	if col.HistoryLimit < 1 {
 		return nil // not loaded; never prune on a guess
 	}
-	_, err = tx.Exec(ctx, `DELETE FROM record_revisions WHERE app = $1 AND record_id = $2 AND version <= $3`,
+	_, err = tx.Exec(ctx, `DELETE FROM record_revisions WHERE app = $1 AND record_id = $2 AND version <= $3
+		AND NOT sb_revision_pinned(app, record_id, version)`,
 		col.App, rr.id, rr.version-col.HistoryLimit)
 	return err
 }
@@ -318,8 +319,8 @@ func (r *Records) replay(ctx context.Context, tx pgx.Tx, c Ctx, col *Collection,
 		return nil, err
 	}
 	rec, err := r.revisionRecord(ctx, tx, c, col, rr, rc.ResourceVersion, false)
-	if errs.Is(err, "not_found") { // trimmed from history: describe the current version instead
-		rec, err = r.view(ctx, tx, c, col, rr)
+	if errs.Is(err, "not_found") {
+		return nil, errs.Coded(410, "result_expired", "the original result is no longer retained")
 	}
 	if err != nil {
 		return nil, err

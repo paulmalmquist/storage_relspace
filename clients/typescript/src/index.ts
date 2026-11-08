@@ -113,6 +113,9 @@ export class Strongbox {
 
   /** @internal */
   async request<T>(r: Req): Promise<T> {
+    if (r.method !== "GET" && r.method !== "HEAD") {
+      r.headers = { ...r.headers, "Idempotency-Key": r.headers?.["Idempotency-Key"] ?? newOperationId() };
+    }
     const url = new URL(this.#opts.baseUrl + r.path);
     for (const [k, v] of Object.entries(r.query ?? {})) if (v !== undefined) url.searchParams.set(k, String(v));
     let lastError: unknown;
@@ -220,10 +223,10 @@ export class App {
 
   // ---- teams ----
   createTeam(name: string, o: CallOptions = {}) {
-    return this.#req<Team>({ method: "POST", path: `${this.base}/teams`, json: { name }, signal: o.signal });
+    return this.#req<Team>({ method: "POST", path: `${this.base}/teams`, json: { name }, headers:this.#mut(o), signal: o.signal });
   }
   setTeamMember(team: string, subject: string, role: "viewer" | "editor" | "admin", o: CallOptions = {}) {
-    return this.#req<unknown>({ method: "PUT", path: `${this.base}/teams/${enc(team)}/members/${enc(subject)}`, json: { role }, signal: o.signal });
+    return this.#req<unknown>({ method: "PUT", path: `${this.base}/teams/${enc(team)}/members/${enc(subject)}`, json: { role }, headers:this.#mut(o), signal: o.signal });
   }
 
   // ---- collections ----
@@ -276,7 +279,8 @@ export class App {
       }
     }
   }
-  deleteRecord(coll: string, id: string, opts: CallOptions & { expectedVersion?: number; purge?: boolean } = {}) {
+  deleteRecord(coll: string, id: string, opts: CallOptions & { expectedVersion: number; purge?: boolean }) {
+    if (!Number.isInteger(opts.expectedVersion) || opts.expectedVersion <= 0) throw new Error("expectedVersion must be positive");
     const extra: Record<string, string> = opts.expectedVersion ? { "If-Match": etag(opts.expectedVersion) } : {};
     return this.#req<void>({ method: "DELETE", path: this.#rec(coll, id), query: { purge: opts.purge },
       headers: this.#mut(opts, extra), signal: opts.signal });
@@ -310,13 +314,13 @@ export class App {
   // ---- sharing ----
   share(coll: string, id: string, visibility: "private" | "team" | "app", teamId?: string, o: CallOptions = {}) {
     return this.#req<S["SharingOut"]>({ method: "PUT", path: `${this.#rec(coll, id)}/sharing`,
-      json: { visibility, team_id: teamId }, signal: o.signal });
+      json: { visibility, team_id: teamId }, headers:this.#mut(o), signal: o.signal });
   }
   grant(coll: string, id: string, g: S["GrantIn"], o: CallOptions = {}) {
-    return this.#req<Grant>({ method: "POST", path: `${this.#rec(coll, id)}/grants`, json: g, signal: o.signal });
+    return this.#req<Grant>({ method: "POST", path: `${this.#rec(coll, id)}/grants`, json: g, headers:this.#mut(o), signal: o.signal });
   }
   revoke(coll: string, id: string, grantId: string, o: CallOptions = {}) {
-    return this.#req<void>({ method: "DELETE", path: `${this.#rec(coll, id)}/grants/${enc(grantId)}`, signal: o.signal });
+    return this.#req<void>({ method: "DELETE", path: `${this.#rec(coll, id)}/grants/${enc(grantId)}`, headers:this.#mut(o), signal: o.signal });
   }
 
   // ---- blobs ----
@@ -357,13 +361,13 @@ export class App {
   }
   uploadPart(id: string, n: number, data: Uint8Array, o: CallOptions = {}) {
     return this.#req<S["PartOut"]>({ method: "PUT", path: `${this.base}/uploads/${enc(id)}/parts/${n}`, body: data,
-      headers: { "Content-Type": "application/octet-stream" }, signal: o.signal });
+      headers: this.#mut(o,{ "Content-Type": "application/octet-stream" }), signal: o.signal });
   }
   completeUpload(id: string, o: CallOptions = {}) {
     return this.#req<Blob>({ method: "POST", path: `${this.base}/uploads/${enc(id)}/complete`, headers: this.#mut(o), signal: o.signal });
   }
   abortUpload(id: string, o: CallOptions = {}) {
-    return this.#req<void>({ method: "DELETE", path: `${this.base}/uploads/${enc(id)}`, signal: o.signal });
+    return this.#req<void>({ method: "DELETE", path: `${this.base}/uploads/${enc(id)}`, headers:this.#mut(o), signal: o.signal });
   }
   /**
    * Upload `data` through an upload session, `parallel` parts at a time. Pass `resume` (an upload
@@ -376,7 +380,7 @@ export class App {
     const workers = Array.from({ length: Math.max(1, Math.min(o.parallel ?? 4, 8)) }, async () => {
       for (let n = todo.shift(); n !== undefined; n = todo.shift()) {
         const start = (n - 1) * sess.part_size;
-        await this.uploadPart(sess.upload_id, n, data.subarray(start, Math.min(start + sess.part_size, sess.size_bytes)), o);
+        await this.uploadPart(sess.upload_id, n, data.subarray(start, Math.min(start + sess.part_size, sess.size_bytes)), {signal:o.signal,operationId:`part-${sess.upload_id}-${n}`});
       }
     });
     await Promise.all(workers);

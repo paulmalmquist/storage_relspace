@@ -151,6 +151,14 @@ func retryable(status int) bool {
 }
 
 func (c *Client) send(ctx context.Context, rq request) (*http.Response, error) {
+	if rq.method != "GET" && rq.method != "HEAD" {
+		if rq.headers == nil {
+			rq.headers = map[string]string{}
+		}
+		if rq.headers["Idempotency-Key"] == "" {
+			rq.headers["Idempotency-Key"] = operationID(ctx)
+		}
+	}
 	for attempt := 1; ; attempt++ {
 		u := c.base + rq.path
 		if len(rq.query) > 0 {
@@ -570,7 +578,7 @@ func (a *App) ResumeLargeBlob(ctx context.Context, id string, r io.ReaderAt, par
 				errc <- fmt.Errorf("read part %d: %w", n, err)
 				return
 			}
-			if err := a.UploadPart(ctx, id, n, buf); err != nil {
+			if err := a.UploadPart(WithOperationID(ctx, fmt.Sprintf("part-%s-%d", id, n)), id, n, buf); err != nil {
 				errc <- fmt.Errorf("part %d: %w", n, err)
 			}
 		}(n, start, length)
@@ -583,9 +591,10 @@ func (a *App) ResumeLargeBlob(ctx context.Context, id string, r io.ReaderAt, par
 	return a.CompleteUpload(WithOperationID(ctx, "complete-"+id), id)
 }
 
-// Usage is what the app stores against its quota (nil limits are unlimited).
+// Usage counts resources visible to the caller; limits are app-wide (nil is unlimited).
 type Usage struct {
 	App            string `json:"app"`
+	Scope          string `json:"scope"`
 	BlobBytes      int64  `json:"blob_bytes"`
 	Blobs          int64  `json:"blobs"`
 	ReservedBytes  int64  `json:"reserved_bytes"`
@@ -784,6 +793,9 @@ func (a *App) Mutate(ctx context.Context, coll, id string, attempts int, fn func
 
 // DeleteRecord deletes (expectedVersion 0: whatever is current, still atomic). purge also drops history.
 func (a *App) DeleteRecord(ctx context.Context, coll, id string, expectedVersion int, purge bool) error {
+	if expectedVersion <= 0 {
+		return fmt.Errorf("expectedVersion must be positive")
+	}
 	h := map[string]string{"Idempotency-Key": operationID(ctx)}
 	if expectedVersion > 0 {
 		h["If-Match"] = etag(expectedVersion)

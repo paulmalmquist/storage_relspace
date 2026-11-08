@@ -70,6 +70,23 @@ func (k *Keys) Active(ctx context.Context, tx pgx.Tx, app, scope, purpose string
 	case err != nil && !errors.Is(err, pgx.ErrNoRows):
 		return "", nil, err
 	}
+	if purpose != PurposeData {
+		// Only cold singleton creation serializes. Existing keys take the fast path
+		// above, so ordinary mutations do not acquire a shared per-app write lock.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+			"strongbox.key:"+app+"/"+scope+"/"+purpose); err != nil {
+			return "", nil, err
+		}
+		err := tx.QueryRow(ctx, `SELECT id FROM data_keys WHERE app=$1 AND scope=$2 AND purpose=$3
+			AND retired_at IS NULL ORDER BY created_at DESC, id DESC LIMIT 1`, app, scope, purpose).Scan(&id)
+		if err == nil {
+			key, err := k.Key(ctx, tx, app, id, scope)
+			return id, key, err
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return "", nil, err
+		}
+	}
 	return k.create(ctx, tx, app, scope, purpose)
 }
 

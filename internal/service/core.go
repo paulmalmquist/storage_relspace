@@ -64,10 +64,11 @@ func (a *Access) AtLeast(role string) bool { return roleRank[a.Role] >= roleRank
 
 // Core holds what every service needs: the scoped database, policy and audit.
 type Core struct {
-	DB      *store.DB
-	Policy  *auth.Policy
-	Audit   *audit.Log
-	Conceal bool
+	DB         *store.DB
+	Policy     *auth.Policy
+	Audit      *audit.Log
+	Conceal    bool
+	operations *receipts
 }
 
 // auditedError is a denial or failure whose audit event must be written after the request

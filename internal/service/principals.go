@@ -23,7 +23,7 @@ func (p *Principals) List(ctx context.Context, c Ctx) ([]map[string]any, error) 
 			return err
 		}
 		var err error
-		out, err = p.Registry.List(ctx)
+		out, err = p.Registry.ListWith(ctx, tx)
 		return err
 	})
 	if out == nil {

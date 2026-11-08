@@ -105,13 +105,14 @@ func Build(ctx context.Context, cfg *config.Config, o Overrides) (*Container, er
 	auditLog := audit.New(db, cfg.AuditStripes)
 	core := &Core{DB: db, Policy: auth.NewPolicy(cfg.ExportControlledCategories), Audit: auditLog, Conceal: cfg.ConcealDenied}
 	rc := &receipts{core: core, keys: keys}
+	core.operations = rc
 	authz := SQLAuthorizer{}
 	records := &Records{Core: core, keys: keys, receipts: rc, authz: authz, MaxBytes: cfg.MaxRecordBytes,
 		MaxResponseBytes: 8 << 20, schemas: cache.New[*jsonschema.Schema](1024, time.Hour)}
 	blobs := &Blobs{Core: core, keys: keys, receipts: rc, authz: authz, backend: backend, kms: kp, ChunkSize: cfg.ChunkSize,
 		MaxBytes: cfg.MaxSingleUploadBytes, MaxBlob: cfg.MaxBlobBytes, PartSize: cfg.UploadPartBytes,
 		SessionTTL: cfg.UploadSessionTTL, MaxMetaSize: cfg.MaxBlobMetadataBytes, LeaseTTL: 2 * time.Minute}
-	registry := auth.NewRegistry(pool)
+	registry := auth.NewScopedRegistry(db)
 	return &Container{
 		Config: cfg, Pool: pool, DB: db, KMS: kp, Backend: backend, Keys: keys, Audit: auditLog, Core: core,
 		Principals: registry, PrincipalAdmin: &Principals{Core: core, Registry: registry}, Blobs: blobs, Records: records,

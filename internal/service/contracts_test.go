@@ -99,7 +99,7 @@ func TestMigrationAppliesDefaultsValidatesAndIndexes(t *testing.T) {
 	if _, err := env.C.Worker.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	m := must[*service.Migration](t)(env.C.Records.GetMigration(ctx, eng, "parts", ch.Migration.ID))
+	m := must[*service.Migration](t)(env.C.Records.GetMigration(ctx, adm, "parts", ch.Migration.ID))
 	if m.State != "succeeded" || m.Processed < n || m.Rewritten != n || len(m.Failures) != 0 {
 		t.Fatalf("migration %+v", m)
 	}
@@ -138,7 +138,7 @@ func TestFailedMigrationLeavesTheCollectionAlone(t *testing.T) {
 	if _, err := env.C.Worker.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	m := must[*service.Migration](t)(env.C.Records.GetMigration(ctx, eng, "parts", ch.Migration.ID))
+	m := must[*service.Migration](t)(env.C.Records.GetMigration(ctx, adm, "parts", ch.Migration.ID))
 	if m.State != "failed" || len(m.Failures) != 1 || m.Failures[0].Reason != "another record already has this sku" {
 		t.Fatalf("migration %+v", m)
 	}
@@ -189,7 +189,7 @@ func TestContractChangeRacesWriters(t *testing.T) {
 	if _, err := env.C.Worker.RunOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
-	m := must[*service.Migration](t)(env.C.Records.GetMigration(ctx, eng, "notes", ch.Migration.ID))
+	m := must[*service.Migration](t)(env.C.Records.GetMigration(ctx, adm, "notes", ch.Migration.ID))
 	if m.State == "failed" {
 		return // the job found the records written under v1 before the change was staged
 	}

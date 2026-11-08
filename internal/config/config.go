@@ -67,6 +67,7 @@ type Config struct {
 	MaxInFlightPerApp    int           // concurrent requests per app; 0 disables
 	DBAcquireTimeout     time.Duration // waiting for a pooled connection beyond this is 503
 	RequestTimeout       time.Duration // non-streaming requests
+	StreamTimeout        time.Duration // uploads/downloads, including authentication
 	KMSTimeout           time.Duration
 	MetricsExporter      string // none | gcp (Cloud Monitoring) | stdout
 
@@ -210,6 +211,7 @@ func FromLookup(lookup func(string) (string, bool)) (*Config, error) {
 		MaxInFlightPerApp:          int(r.integer("MAX_IN_FLIGHT_PER_APP", 64)),
 		DBAcquireTimeout:           time.Duration(r.integer("DB_ACQUIRE_TIMEOUT_MS", 3000)) * time.Millisecond,
 		RequestTimeout:             time.Duration(r.integer("REQUEST_TIMEOUT_MS", 30000)) * time.Millisecond,
+		StreamTimeout:              time.Duration(r.integer("STREAM_TIMEOUT_MS", 300000)) * time.Millisecond,
 		KMSTimeout:                 time.Duration(r.integer("KMS_TIMEOUT_MS", 10000)) * time.Millisecond,
 		MetricsExporter:            r.str("METRICS_EXPORTER", "none"),
 		ChunkSize:                  int(r.integer("CHUNK_SIZE", 64*KiB)),
@@ -311,7 +313,7 @@ func (c *Config) Validate() error {
 	if (c.RateSubjectPerSecond > 0 && c.RateSubjectBurst < 1) || (c.RateAppPerSecond > 0 && c.RateAppBurst < 1) {
 		add("rate limit bursts must be at least 1")
 	}
-	if c.DBAcquireTimeout <= 0 || c.RequestTimeout <= 0 || c.KMSTimeout <= 0 {
+	if c.DBAcquireTimeout <= 0 || c.RequestTimeout <= 0 || c.StreamTimeout <= 0 || c.KMSTimeout <= 0 {
 		add("timeouts must be positive")
 	}
 	if !oneOf(c.MetricsExporter, "none", "gcp", "stdout") {

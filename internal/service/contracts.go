@@ -43,6 +43,7 @@ type MigrationFailure struct {
 
 type Migration struct {
 	ID          string             `json:"id"`
+	Marking     string             `json:"marking,omitempty"`
 	Collection  string             `json:"collection"`
 	FromVersion int                `json:"from_version"`
 	ToVersion   int                `json:"to_version"`
@@ -118,6 +119,15 @@ func (r *Records) ChangeContract(ctx context.Context, c Ctx, name string, in Con
 	doc := in.JSONSchema
 	if doc == nil {
 		return nil, errs.Invalid("json_schema is required")
+	}
+	// Compare the same JSON representation that is compiled and stored. In-process
+	// callers may otherwise supply []string where the checker expects []any.
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, errs.Invalid("schema is not JSON")
+	}
+	if err := decodeJSON(raw, &doc); err != nil {
+		return nil, errs.Invalid("schema is not JSON")
 	}
 	if t, ok := doc["type"]; ok && t != "object" {
 		return nil, errs.Invalid("collection schema must describe a JSON object")
@@ -275,15 +285,40 @@ func (r *Records) ContractVersions(ctx context.Context, c Ctx, name string) ([]C
 // GetMigration reports a migration's progress.
 func (r *Records) GetMigration(ctx context.Context, c Ctx, name, id string) (*Migration, error) {
 	var out *Migration
-	err := r.inApp(ctx, c, func(tx pgx.Tx, _ *Access) error {
-		if _, err := r.readableCollection(ctx, tx, c, name, false); err != nil {
+	err := r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
+		col, err := r.readableCollection(ctx, tx, c, name, false)
+		if err != nil {
 			return err
+		}
+		if a.Role != "admin" || !c.Principal.HasScope("apps:operate") {
+			return errs.Forbidden("migration details require app admin and apps:operate")
+		}
+		rows, err := tx.Query(ctx, `SELECT marking FROM marking_catalog WHERE app=$1 AND scope=$2`, c.App, "collection:"+name)
+		if err != nil {
+			return err
+		}
+		var banners []string
+		banners, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return err
+		}
+		classifications := []markings.Marking{col.Marking}
+		for _, banner := range banners {
+			mk, err := markings.Parse(banner)
+			if err != nil || !r.Policy.Evaluate(c.Principal, auth.RecordRead, &mk).Allowed {
+				return errs.Forbidden("migration details are not available under current clearances")
+			}
+			classifications = append(classifications, mk)
 		}
 		m, err := scanMigration(tx.QueryRow(ctx, `SELECT `+migrationCols+` FROM collection_migrations WHERE app = $1 AND collection = $2 AND id = $3`,
 			c.App, name, id))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errs.NotFound("migration not found")
 		}
+		if err != nil {
+			return err
+		}
+		m.Marking = markings.Combine(classifications).Banner()
 		out = m
 		return err
 	})
@@ -307,11 +342,27 @@ func (r *Records) CancelMigration(ctx context.Context, c Ctx, name, id string) (
 		if _, err := r.check(ctx, tx, c, auth.CollectionCreate, "collection", name, &col.Marking, checkOpts{noConceal: true, skipAllow: true}); err != nil {
 			return err
 		}
+		replay, err := r.receipts.claim(ctx, tx, c, Operation{Type: "contract.cancel", Target: name, Payload: id}, 0, "")
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			out = &Migration{}
+			return decodeOutcome(replay, out)
+		}
 		if out, err = r.endMigration(ctx, tx, col, id, "cancelled"); err != nil {
 			return err
 		}
-		return r.note(ctx, tx, c, auth.CollectionCreate, "collection", name, "allow", "contract migration cancelled", &col.Marking,
-			map[string]any{"migration": id})
+		if err := r.note(ctx, tx, c, auth.CollectionCreate, "collection", name, "allow", "contract migration cancelled", &col.Marking, map[string]any{"migration": id}); err != nil {
+			return err
+		}
+		// Only ID/state are returned on cancellation, without app-wide failure metadata.
+		out.Marking = col.Marking.Banner()
+		out.Processed = 0
+		out.Rewritten = 0
+		out.Failures = []MigrationFailure{}
+
+		return r.receipts.complete(ctx, tx, c, "collection", name, 0, outcome(out))
 	})
 	return out, err
 }
@@ -519,9 +570,13 @@ func widens(oldS, newS any, path string) string {
 		"minLength": true, "maxLength": true, "minItems": true, "maxItems": true, "title": true, "description": true,
 		"$comment": true, "examples": true, "default": true, "$schema": true, "format": true}
 	for _, key := range union(keys(o), keys(n)) {
-		if !known[key] && !reflect.DeepEqual(o[key], n[key]) {
-			return fmt.Sprintf("%s: %q changed", path, key)
+		if !known[key] {
+			// Even unchanged keywords can interact with changed properties/items.
+			return fmt.Sprintf("%s: cannot prove compatibility with %q", path, key)
 		}
+	}
+	if !reflect.DeepEqual(o["$schema"], n["$schema"]) {
+		return path + ": schema dialect changed"
 	}
 	if why := widerType(o["type"], n["type"]); why != "" {
 		return path + ": " + why
@@ -581,8 +636,10 @@ func widens(oldS, newS any, path string) string {
 			}
 		}
 	}
-	if !reflect.DeepEqual(o["const"], n["const"]) && n["const"] != nil {
-		return path + ": const changed"
+	if nv, present := n["const"]; present {
+		if ov, existed := o["const"]; !existed || !reflect.DeepEqual(ov, nv) {
+			return path + ": const changed"
+		}
 	}
 	if !reflect.DeepEqual(o["format"], n["format"]) && n["format"] != nil {
 		return path + ": format changed"

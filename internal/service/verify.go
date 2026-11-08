@@ -179,14 +179,7 @@ func (c *Container) verifyContent(ctx context.Context, tx pgx.Tx, app string, ro
 	var src io.ReadCloser
 	expected := ""
 	if row.layout == "parts" {
-		rows, err := tx.Query(ctx, `SELECT storage_key, ciphertext_sha256 FROM blob_parts WHERE app = $1 AND blob_id = $2 ORDER BY part_number`, app, row.id)
-		if err != nil {
-			return 0, err
-		}
-		parts, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (partRef, error) {
-			var p partRef
-			return p, r.Scan(&p.key, &p.digest)
-		})
+		parts, err := c.Blobs.partsTx(ctx, tx, app, row)
 		if err != nil {
 			return 0, err
 		}
@@ -208,6 +201,9 @@ func (c *Container) verifyContent(ctx context.Context, tx pgx.Tx, app string, ro
 	n, err := io.Copy(io.Discard, dec)
 	if err != nil {
 		return n, err
+	}
+	if row.size == nil || n != *row.size {
+		return n, fmt.Errorf("plaintext size mismatch")
 	}
 	if expected != "" && hex.EncodeToString(sha.Sum(nil)) != expected {
 		return n, fmt.Errorf("ciphertext digest mismatch")

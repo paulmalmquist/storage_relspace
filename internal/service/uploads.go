@@ -165,6 +165,9 @@ func (b *Blobs) sessionTx(ctx context.Context, tx pgx.Tx, c Ctx, id string, anyS
 	if !anyState && r.state != "pending" {
 		return nil, errs.NotFound("upload not found")
 	}
+	if _, err := b.check(ctx, tx, c, auth.BlobReadMeta, "upload", id, &m, checkOpts{}); err != nil {
+		return nil, err
+	}
 	rows, err := tx.Query(ctx, `SELECT part_number FROM blob_parts WHERE app = $1 AND blob_id = $2 ORDER BY part_number`, c.App, id)
 	if err != nil {
 		return nil, err
@@ -202,7 +205,7 @@ func (b *Blobs) PutPart(ctx context.Context, c Ctx, id string, n int, body io.Re
 		if row, m, err = b.sessionRow(ctx, tx, c, id, ""); err != nil {
 			return err
 		}
-		if row.state != "pending" {
+		if row.state != "pending" && !(row.state == "active" && c.OpID != "") {
 			return errs.Coded(409, "upload_expired", "this upload is %s", row.state)
 		}
 		if _, err := b.check(ctx, tx, c, auth.BlobCreate, "blob", id, &m, checkOpts{noConceal: true, skipAllow: true}); err != nil {
@@ -253,7 +256,8 @@ func (b *Blobs) PutPart(ctx context.Context, c Ctx, id string, n int, body io.Re
 		}
 	}
 	buf := make([]byte, 256*1024)
-	src := io.LimitReader(body, want+1)
+	plainHash := sha256.New()
+	src := io.TeeReader(io.LimitReader(body, want+1), plainHash)
 	for {
 		k, rerr := src.Read(buf)
 		if k > 0 {
@@ -290,7 +294,16 @@ func (b *Blobs) PutPart(ctx context.Context, c Ctx, id string, n int, body io.Re
 		return fail(err)
 	}
 	digest := hex.EncodeToString(sha.Sum(nil))
+	replayed := false
 	err = b.DB.Run(ctx, c.scope(), func(tx pgx.Tx) error {
+		replay, err := b.receipts.claim(ctx, tx, c, Operation{Type: "upload.part", Target: fmt.Sprintf("%s/%d", id, n), Payload: hex.EncodeToString(plainHash.Sum(nil))}, 0, "")
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			replayed = true
+			return nil
+		}
 		// FOR SHARE: parts may be stored concurrently, but not while Complete (FOR UPDATE) runs.
 		var state string
 		if err := tx.QueryRow(ctx, `SELECT state FROM blobs WHERE app = $1 AND id = $2 FOR SHARE`, c.App, id).Scan(&state); err != nil {
@@ -298,6 +311,10 @@ func (b *Blobs) PutPart(ctx context.Context, c Ctx, id string, n int, body io.Re
 		}
 		if state != "pending" {
 			return errs.Coded(409, "upload_expired", "this upload is %s", state)
+		}
+		// Serialize replacement of this part even when it does not exist yet.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "strongbox.part:"+c.App+"/"+id+fmt.Sprint("/", n)); err != nil {
+			return err
 		}
 		var old *string
 		if err := tx.QueryRow(ctx, `SELECT storage_key FROM blob_parts WHERE app = $1 AND blob_id = $2 AND part_number = $3 FOR UPDATE`,
@@ -311,9 +328,14 @@ func (b *Blobs) PutPart(ctx context.Context, c Ctx, id string, n int, body io.Re
 			return err
 		}
 		if old != nil && *old != key {
-			return enqueueObjectDelete(ctx, tx, c.App, id, []string{*old}, 0)
+			if err := enqueueObjectDelete(ctx, tx, c.App, id, []string{*old}, 0); err != nil {
+				return err
+			}
 		}
-		return nil
+		if err := b.note(ctx, tx, c, auth.BlobCreate, "blob", id, "allow", "upload part stored", &m, map[string]any{"part": n}); err != nil {
+			return err
+		}
+		return b.receipts.complete(ctx, tx, c, "blob", id, 0, map[string]any{"part": n})
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrCommitUnknown) {
@@ -329,6 +351,11 @@ func (b *Blobs) PutPart(ctx context.Context, c Ctx, id string, n int, body io.Re
 			return 0, errs.NotFound("upload not found")
 		}
 		return 0, err
+	}
+	if replayed {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		_ = b.backend.Delete(cleanup, key)
 	}
 	return want, nil
 }
@@ -440,6 +467,13 @@ func (b *Blobs) CompleteSession(ctx context.Context, c Ctx, id string) (*BlobMet
 // AbortSession discards a pending session and queues its parts for deletion.
 func (b *Blobs) AbortSession(ctx context.Context, c Ctx, id string) error {
 	return b.inApp(ctx, c, func(tx pgx.Tx, _ *Access) error {
+		replay, err := b.receipts.claim(ctx, tx, c, Operation{Type: "blob.abort", Target: id}, 0, "")
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			return nil
+		}
 		row, m, err := b.sessionRow(ctx, tx, c, id, " FOR UPDATE")
 		if err != nil {
 			return err
@@ -450,7 +484,10 @@ func (b *Blobs) AbortSession(ctx context.Context, c Ctx, id string) error {
 		if err := b.abortPending(ctx, tx, c.App, id, ""); err != nil {
 			return err
 		}
-		return b.note(ctx, tx, c, auth.BlobCreate, "blob", id, "error", "upload session aborted by the uploader", &m, nil)
+		if err := b.note(ctx, tx, c, auth.BlobCreate, "blob", id, "error", "upload session aborted by the uploader", &m, nil); err != nil {
+			return err
+		}
+		return b.receipts.complete(ctx, tx, c, "blob", id, 0, nil)
 	})
 }
 
@@ -508,29 +545,47 @@ func (r *partsReader) Close() error {
 	return nil
 }
 
-func (b *Blobs) openParts(ctx context.Context, c Ctx, row *blobRow) (io.ReadCloser, error) {
-	var parts []partRef
-	err := b.DB.Run(ctx, c.scope(), func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT storage_key, ciphertext_sha256 FROM blob_parts WHERE app = $1 AND blob_id = $2
-			ORDER BY part_number`, c.App, row.id)
-		if err != nil {
-			return err
-		}
-		parts, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (partRef, error) {
-			var p partRef
-			return p, r.Scan(&p.key, &p.digest)
-		})
-		return err
-	})
+// partsTx validates both the inventory and its ordered aggregate digest for reads and verification.
+func (b *Blobs) partsTx(ctx context.Context, tx pgx.Tx, app string, row *blobRow) ([]partRef, error) {
+	rows, err := tx.Query(ctx, `SELECT part_number,storage_key,ciphertext_sha256,size_bytes FROM blob_parts
+        WHERE app=$1 AND blob_id=$2 ORDER BY part_number`, app, row.id)
 	if err != nil {
 		return nil, err
 	}
-	digests := make([]string, len(parts))
-	for i, p := range parts {
-		digests[i] = p.digest
+	defer rows.Close()
+	var parts []partRef
+	var digests []string
+	for rows.Next() {
+		var p partRef
+		var n int
+		var size int64
+		if err := rows.Scan(&n, &p.key, &p.digest, &size); err != nil {
+			return nil, err
+		}
+		if row.declaredSize == nil || row.partSize == nil || n != len(parts)+1 || size != partLength(*row.declaredSize, *row.partSize, n) {
+			return nil, errs.Integrity("stored part number or size does not match the blob")
+		}
+		raw, err := hex.DecodeString(p.digest)
+		if err != nil || len(raw) != sha256.Size {
+			return nil, errs.Integrity("stored part digest is invalid")
+		}
+		parts = append(parts, p)
+		digests = append(digests, p.digest)
 	}
-	if row.sha == nil || partsDigest(digests) != *row.sha || len(parts) != partCount(*row.declaredSize, *row.partSize) {
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if row.declaredSize == nil || row.partSize == nil || *row.partSize <= 0 || row.sha == nil || partsDigest(digests) != *row.sha || len(parts) != partCount(*row.declaredSize, *row.partSize) {
 		return nil, errs.Integrity("stored part list does not match the blob")
+	}
+	return parts, nil
+}
+
+func (b *Blobs) openParts(ctx context.Context, c Ctx, row *blobRow) (io.ReadCloser, error) {
+	var parts []partRef
+	err := b.DB.Run(ctx, c.scope(), func(tx pgx.Tx) error { var err error; parts, err = b.partsTx(ctx, tx, c.App, row); return err })
+	if err != nil {
+		return nil, err
 	}
 	return &partsReader{ctx: ctx, backend: b.backend, parts: parts}, nil
 }
