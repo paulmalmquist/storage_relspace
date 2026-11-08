@@ -75,6 +75,16 @@ var tables = []table{
 	{name: "audit_events", where: "chain IN (SELECT chain FROM audit_heads WHERE app = $1)", order: "chain, seq"},
 }
 
+// Format 1 deliberately omitted transient state. Sealed format 2 also preserves durable
+// idempotency outcomes and unfinished outside effects. Outbox IDs are target-local identities.
+func formatTables(version int) []table {
+	if version == 1 {
+		return tables
+	}
+	out := append([]table(nil), tables...)
+	return append(out, table{name: "operation_receipts", where: "app=$1", order: "subject,actor,op_id"}, table{name: "outbox", where: "app=$1 AND status<>'done'", order: "id"})
+}
+
 type TableEntry struct {
 	Name      string `json:"name"`
 	File      string `json:"file"`
@@ -107,15 +117,17 @@ type Manifest struct {
 		Bytes  int64  `json:"bytes"`
 		SHA256 string `json:"sha256"`
 	} `json:"objects"`
-	KEKs       []string          `json:"kek_ids"`
-	Notes      string            `json:"notes"`
-	Encryption *ExportEncryption `json:"encryption,omitempty"`
+	KEKs        []string          `json:"kek_ids"`
+	Notes       string            `json:"notes"`
+	Encryption  *ExportEncryption `json:"encryption,omitempty"`
+	rawManifest []byte
 }
 
 type Source struct {
-	Database         string `json:"database"`
-	Schema           string `json:"schema"`
-	SystemIdentifier string `json:"system_identifier,omitempty"`
+	Database         string                 `json:"database"`
+	Schema           string                 `json:"schema"`
+	SystemIdentifier string                 `json:"system_identifier,omitempty"`
+	Objects          *store.ObjectNamespace `json:"objects,omitempty"`
 }
 
 func identity(ctx context.Context, q interface {
@@ -262,6 +274,13 @@ func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app,
 			return err
 		}
 		m.Source = source
+		if format == 2 {
+			namespace, err := store.Namespace(backend)
+			if err != nil {
+				return err
+			}
+			m.Source.Objects = &namespace
+		}
 		if err := tx.QueryRow(ctx, `SELECT transaction_timestamp()`).Scan(&m.SnapshotAt); err != nil {
 			return err
 		}
@@ -275,8 +294,12 @@ func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app,
 		if plain && format == 1 {
 			return errors.New("format 1 export refuses plaintext record data; use encrypted collections")
 		}
-		for _, t := range tables {
-			q := `SELECT to_jsonb(t) FROM ` + t.name + ` t WHERE ` + t.where
+		for _, t := range formatTables(m.FormatVersion) {
+			expression := `to_jsonb(t)`
+			if t.name == "outbox" {
+				expression = `jsonb_set(to_jsonb(t)-'id'-'lease_owner'-'lease_expires','{status}',to_jsonb(CASE WHEN status='leased' THEN 'pending' ELSE status END))`
+			}
+			q := `SELECT ` + expression + ` FROM ` + t.name + ` t WHERE ` + t.where
 			if t.order != "" {
 				q += ` ORDER BY ` + t.order
 			}
@@ -290,6 +313,7 @@ func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app,
 				rows.Close()
 				return err
 			}
+			defer out.f.Close() // bounded by the fixed table inventory; covers early query/encryption errors
 			entry := TableEntry{Name: t.name, File: file}
 			if format == 2 {
 				fileKey := crypto.NewDataKey()
@@ -428,6 +452,7 @@ func copyOut(ctx context.Context, backend store.Backend, key, dir string) (Objec
 	if err != nil {
 		return ObjectEntry{}, err
 	}
+	defer out.f.Close()
 	n, err := io.Copy(out.w, src)
 	if err == nil {
 		err = out.close()
@@ -520,6 +545,7 @@ func readManifest(dir string) (*Manifest, error) {
 	if m.FormatVersion == 1 && m.Encryption != nil {
 		return nil, errors.New("mixed export format versions")
 	}
+	m.rawManifest = raw
 	return &m, nil
 }
 
@@ -569,7 +595,7 @@ func validateContent(dir string, m *Manifest, read readTable) (*Report, error) {
 		rep.addf("invalid app identity")
 	}
 	known := map[string]bool{}
-	for _, t := range tables {
+	for _, t := range formatTables(m.FormatVersion) {
 		known[t.name] = true
 	}
 	seen := map[string]bool{}
@@ -613,7 +639,7 @@ func validateContent(dir string, m *Manifest, read readTable) (*Report, error) {
 			rep.addf("%s: decrypted row count mismatch", t.File)
 		}
 	}
-	for _, t := range tables {
+	for _, t := range formatTables(m.FormatVersion) {
 		if !seen[t.name] {
 			rep.addf("missing table %s", t.name)
 		}
@@ -820,6 +846,19 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, dir
 		return nil, errors.New("the target is the export's source database; restore only into a separate database")
 	}
 
+	if m.FormatVersion == 2 {
+		namespace, err := store.Namespace(backend)
+		if err != nil {
+			return nil, err
+		}
+		if m.Source.Objects == nil {
+			return nil, errors.New("sealed export has no source storage namespace")
+		}
+		if m.Source.Objects.Overlaps(namespace) {
+			return nil, errors.New("target object storage overlaps the source; use a separate bucket/prefix or directory")
+		}
+	}
+
 	errRollback := errors.New("dry run")
 	err = ownerTx(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SET CONSTRAINTS ALL DEFERRED`); err != nil {
@@ -863,7 +902,7 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, dir
 		for _, t := range m.Tables {
 			byName[t.Name] = t
 		}
-		for _, t := range tables {
+		for _, t := range formatTables(m.FormatVersion) {
 			e, ok := byName[t.name]
 			if !ok {
 				continue

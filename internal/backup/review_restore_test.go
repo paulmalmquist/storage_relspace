@@ -121,3 +121,29 @@ func TestReviewRefusedRestoreDoesNotWriteObjects(t *testing.T) {
 		t.Fatalf("refused restore opened %d object writers before checking target app", backend.writes)
 	}
 }
+
+func TestRestoreRejectsUnexpectedColumnsAfterFirstRow(t *testing.T) {
+	src, ctx := testenv.New(t), context.Background()
+	dir := reviewExport(t, src)
+	reviewRewriteTable(t, dir, "app_members", func(raw []byte) []byte {
+		rows := bytes.Split(bytes.TrimSpace(raw), []byte{'\n'})
+		if len(rows) < 2 {
+			t.Fatal("fixture needs multiple rows")
+		}
+		var row map[string]any
+		if err := json.Unmarshal(rows[1], &row); err != nil {
+			t.Fatal(err)
+		}
+		row["unexpected_column"] = "discarded by an incomplete loader"
+		rows[1], _ = json.Marshal(row)
+		return append(bytes.Join(rows, []byte{'\n'}), '\n')
+	})
+	dst := testenv.EmptyDatabase(t, src.Keyring)
+	backend := &reviewCountingBackend{Backend: dst.C.Backend}
+	if _, err := backup.Restore(ctx, dst.Migrator, backend, dir, false); err == nil {
+		t.Fatal("loader ignored a later row's unknown column")
+	}
+	if backend.writes != 0 {
+		t.Fatal("rejected input wrote objects")
+	}
+}

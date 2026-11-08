@@ -7,12 +7,14 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/paulmalmquist/storage_relspace/internal/backup"
 	"github.com/paulmalmquist/storage_relspace/internal/crypto"
 	"github.com/paulmalmquist/storage_relspace/internal/markings"
 	"github.com/paulmalmquist/storage_relspace/internal/service"
+	"github.com/paulmalmquist/storage_relspace/internal/store"
 	"github.com/paulmalmquist/storage_relspace/internal/testenv"
 )
 
@@ -23,7 +25,7 @@ func TestSealedExportRecoversPlainCollectionsWithoutPlaintextFiles(t *testing.T)
 		t.Fatal(err)
 	}
 	secret := "private-export-payload-marker-52989"
-	rec, err := src.C.Records.Create(ctx, eng, "plain", service.RecordInput{Data: map[string]any{"tag": secret}})
+	rec, err := src.C.Records.Create(ctx, eng, "plain", service.RecordInput{Data: map[string]any{"tag": secret, "payload": strings.Repeat(secret, 5000)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +71,7 @@ func TestSealedExportRecoversPlainCollectionsWithoutPlaintextFiles(t *testing.T)
 		t.Fatal(err)
 	}
 	got, err := dst.C.Records.Get(ctx, dst.Ctx(t, "engineer@rel.test"), "plain", rec.ID)
-	if err != nil || got.Data["tag"] != secret {
+	if err != nil || got.Data["tag"] != secret || got.Data["payload"] != strings.Repeat(secret, 5000) {
 		t.Fatalf("restored plaintext collection: %+v %v", got, err)
 	}
 	v, err := dst.C.VerifyApp(ctx, testenv.App, true)
@@ -185,5 +187,84 @@ func TestSealedValidateAuthenticatesOfflineAndNeedsCorrectKey(t *testing.T) {
 	}
 	if _, report, err := backup.ValidateAuthenticated(ctx, dir, rotated); err != nil || !report.OK() {
 		t.Fatalf("old KEK recovery: %+v %v", report, err)
+	}
+}
+
+func TestSealedRecoveryPreservesReceiptsAndPendingOutsideEffects(t *testing.T) {
+	src, ctx := testenv.New(t), context.Background()
+	owner := src.Ctx(t, "engineer@rel.test")
+	if _, err := src.C.Records.CreateCollection(ctx, src.Ctx(t, "admin@rel.test"), service.CollectionInput{Name: "plain", Marking: markings.None()}); err != nil {
+		t.Fatal(err)
+	}
+	owner.OpID = "receipt-preserved-after-restore"
+	input := service.RecordInput{Data: map[string]any{"state": "saved"}}
+	original, err := src.C.Records.Create(ctx, owner, "plain", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobOwner := src.Ctx(t, "engineer@rel.test")
+	blob, err := src.C.Blobs.Put(ctx, blobOwner, []byte("deleted attachment"), service.BlobInput{Marking: markings.None()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.C.Blobs.DeleteGrace = 0
+	if err := src.C.Blobs.Delete(ctx, blobOwner, blob.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if _, err := backup.Export(ctx, src.Migrator, src.C.Backend, testenv.App, dir, "test", "test", src.C.KMS); err != nil {
+		t.Fatal(err)
+	}
+	dst := testenv.EmptyDatabase(t, src.Keyring)
+	if _, err := backup.Restore(ctx, dst.Migrator, dst.C.Backend, dir, false, dst.C.KMS); err != nil {
+		t.Fatal(err)
+	}
+	retryOwner := dst.Ctx(t, "engineer@rel.test")
+	retryOwner.OpID = owner.OpID
+	replay, err := dst.C.Records.Create(ctx, retryOwner, "plain", input)
+	if err != nil || replay.ID != original.ID || !replay.Replayed {
+		t.Fatalf("restored receipt repeated a create: %+v %v", replay, err)
+	}
+	var key string
+	if err := dst.Migrator.QueryRow(ctx, `SELECT storage_key FROM blobs WHERE app=$1 AND id=$2`, testenv.App, blob.ID).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	before, err := dst.C.Backend.Read(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = before.Close()
+	if _, err := dst.C.Worker.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dst.C.Backend.Read(ctx, key); err == nil {
+		t.Fatal("restored deletion intent was lost")
+	}
+}
+
+func TestSealedRestoreRefusesSourceObjectNamespaceAndSymlinkAliases(t *testing.T) {
+	src, ctx := testenv.New(t), context.Background()
+	dir := t.TempDir()
+	if _, err := backup.Export(ctx, src.Migrator, src.C.Backend, testenv.App, dir, "test", "test", src.C.KMS); err != nil {
+		t.Fatal(err)
+	}
+	dst := testenv.EmptyDatabase(t, src.Keyring)
+	backend := &reviewCountingBackend{Backend: src.C.Backend}
+	if _, err := backup.Restore(ctx, dst.Migrator, backend, dir, false, dst.C.KMS); err == nil {
+		t.Fatal("separate database reused source files")
+	}
+	if backend.writes != 0 {
+		t.Fatal("namespace refusal wrote objects")
+	}
+	alias := filepath.Join(t.TempDir(), "source-alias")
+	if err := os.Symlink(src.BlobDir, alias); err != nil {
+		t.Fatal(err)
+	}
+	linked, err := store.NewLocal(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backup.Restore(ctx, dst.Migrator, linked, dir, true, dst.C.KMS); err == nil {
+		t.Fatal("source directory symlink bypassed refusal")
 	}
 }

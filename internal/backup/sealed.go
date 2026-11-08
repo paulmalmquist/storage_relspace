@@ -1,11 +1,13 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -37,18 +39,97 @@ func exportAAD(m *Manifest, purpose string) []byte {
 	raw, _ := json.Marshal([]string{"strongbox/export/v2", m.App, m.Encryption.ID, purpose})
 	return raw
 }
+
+// Canonicalize the actual signed document, not a projection onto today's Go struct.
+// Adding optional fields to a future reader must not invalidate already-written bundles.
 func manifestAAD(m *Manifest) ([]byte, error) {
-	copyManifest := *m
-	encryption := *m.Encryption
-	encryption.Auth = nil
-	copyManifest.Encryption = &encryption
-	raw, err := json.Marshal(&copyManifest)
+	raw := m.rawManifest
+	if raw == nil {
+		var err error
+		raw, err = json.Marshal(m)
+		if err != nil {
+			return nil, err
+		}
+	}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	value, err := uniqueValue(d, 0)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return nil, errors.New("trailing manifest data")
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("manifest must be an object")
+	}
+	encryption, ok := object["encryption"].(map[string]any)
+	if !ok {
+		return nil, errors.New("manifest has no encryption object")
+	}
+	encryption["auth"] = nil
+	canonical, err := json.Marshal(object)
 	if err != nil {
 		return nil, err
 	}
 	aad := exportAAD(m, "manifest")
-	return append(append(aad, '\n'), raw...), nil
+	return append(append(aad, '\n'), canonical...), nil
 }
+func uniqueValue(d *json.Decoder, depth int) (any, error) {
+	if depth > 64 {
+		return nil, errors.New("manifest nesting exceeds 64 levels")
+	}
+	token, err := d.Token()
+	if err != nil {
+		return nil, err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return token, nil
+	}
+	switch delim {
+	case '{':
+		object := map[string]any{}
+		for d.More() {
+			token, err := d.Token()
+			if err != nil {
+				return nil, err
+			}
+			key, ok := token.(string)
+			if !ok {
+				return nil, errors.New("invalid object key")
+			}
+			if _, exists := object[key]; exists {
+				return nil, errors.New("duplicate manifest field")
+			}
+			value, err := uniqueValue(d, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			object[key] = value
+		}
+		if _, err := d.Token(); err != nil {
+			return nil, err
+		}
+		return object, nil
+	case '[':
+		out := []any{}
+		for d.More() {
+			v, err := uniqueValue(d, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, v)
+		}
+		if _, err := d.Token(); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+	return nil, errors.New("invalid manifest JSON")
+}
+
 func unlock(ctx context.Context, m *Manifest, kp crypto.KeyProvider) ([]byte, error) {
 	key, err := kp.Unwrap(ctx, crypto.WrappedKey{KEKID: m.Encryption.KEKID, Ciphertext: m.Encryption.WrappedKey}, exportAAD(m, "key"))
 	if err != nil {
@@ -139,7 +220,7 @@ func validateTransport(dir string, m *Manifest) (*Manifest, *Report, error) {
 		rep.addf("invalid app identity")
 	}
 	known := map[string]bool{}
-	for _, t := range tables {
+	for _, t := range formatTables(m.FormatVersion) {
 		known[t.name] = true
 	}
 	seen := map[string]bool{}
@@ -159,7 +240,7 @@ func validateTransport(dir string, m *Manifest) (*Manifest, *Report, error) {
 		rep.Tables++
 		rep.Rows += t.Rows
 	}
-	for _, t := range tables {
+	for _, t := range formatTables(m.FormatVersion) {
 		if !seen[t.name] {
 			rep.addf("missing table %s", t.name)
 		}

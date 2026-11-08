@@ -138,6 +138,12 @@ func (c *Container) Operation(ctx context.Context, cx Ctx, opID string) (*Receip
 }
 
 func BuildKMS(ctx context.Context, cfg *config.Config) (crypto.KeyProvider, error) {
+	// Export/authenticated validation also call the factory without building an API container.
+	if cfg.RequireFIPS {
+		if err := crypto.AssertFIPS(); err != nil {
+			return nil, err
+		}
+	}
 	if cfg.KMSBackend == "gcp" {
 		client, err := kms.NewKeyManagementClient(ctx)
 		if err != nil {
