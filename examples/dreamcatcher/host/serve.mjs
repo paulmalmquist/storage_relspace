@@ -61,6 +61,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     gatewayOrigin: env.DC_GATEWAY_ORIGIN,
     strongboxOrigin: env.STRONGBOX_URL,
     ...config,
+    // A platform sidecar can rotate the workload's Cloud Run invoker token here.
+    invokerToken: env.STRONGBOX_INVOKER_TOKEN_FILE
+      ? async () => {
+          const token = (await readFile(env.STRONGBOX_INVOKER_TOKEN_FILE, 'utf8')).trim();
+          if (!token) throw Error('Missing workload invocation credential');
+          return token;
+        }
+      : undefined,
     subjectToken: exchangeCredential({
       url: env.DC_TOKEN_EXCHANGE_URL,
       clientId: env.DC_TOKEN_CLIENT_ID,

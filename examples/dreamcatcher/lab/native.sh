@@ -35,5 +35,5 @@ export STRONGBOX_ENV=dev STRONGBOX_APP_ENV=dev STRONGBOX_AUTH_MODE=dev-hs256 STR
 export STRONGBOX_DEV_JWT_SECRET="$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")"
 export SB_BIN="$DC_LAB_STATE/strongbox"
 go build -o "$SB_BIN" ./cmd/strongbox
-if [[ "${1:-}" == "--test" ]]; then exec node --test examples/dreamcatcher/lab/contract.test.mjs; fi
+if [[ "${1:-}" == "--test" ]]; then exec node --test examples/dreamcatcher/host/identity.test.mjs examples/dreamcatcher/lab/contract.test.mjs; fi
 exec node examples/dreamcatcher/lab/start.mjs

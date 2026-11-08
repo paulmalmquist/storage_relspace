@@ -113,7 +113,14 @@ function attachment(input) {
   return bytes;
 }
 
-export function storageHandler({ gatewayOrigin, strongboxOrigin, bindings, subjects, subjectToken }) {
+export function storageHandler({
+  gatewayOrigin,
+  strongboxOrigin,
+  bindings,
+  subjects,
+  subjectToken,
+  invokerToken,
+}) {
   const dc = origin(gatewayOrigin),
     sb = origin(strongboxOrigin);
   for (const b of Object.values(bindings)) {
@@ -121,7 +128,7 @@ export function storageHandler({ gatewayOrigin, strongboxOrigin, bindings, subje
       !own(profiles, b.profile) ||
       !b.submissionId ||
       !b.marking ||
-      !/^[a-z][a-z0-9_-]{1,62}$/.test(b.strongboxApp)
+      !/^[a-z][a-z0-9-]{1,39}$/.test(b.strongboxApp)
     )
       throw Error('Invalid storage binding');
   }
@@ -173,19 +180,27 @@ export function storageHandler({ gatewayOrigin, strongboxOrigin, bindings, subje
       ]);
       if (Object.keys(input).some((k) => !fields.has(k))) throw new RequestError(422, 'unknown_field');
       const credential = await subjectToken({ token, subject, context });
-      const identity = await httpCall(sb + '/v1/whoami', credential);
+      const iam = invokerToken ? await invokerToken() : undefined;
+      const storage = (path, options = {}) =>
+        httpCall(sb + path, credential, {
+          ...options,
+          headers: {
+            ...options.headers,
+            ...(iam ? { 'X-Serverless-Authorization': 'Bearer ' + iam } : {}),
+          },
+        });
+      const identity = await storage('/v1/whoami');
       if (identity.subject !== subject || identity.kind !== 'user' || identity.actor)
         throw new RequestError(403, 'subject_mismatch');
-      const app = sb + '/v1/apps/' + binding.strongboxApp,
+      const app = '/v1/apps/' + binding.strongboxApp,
         collection = app + '/collections/' + profile.collection;
       const recordBase = collection + '/records';
       const filters = { program_id: input.program_id, row_id: input.row_id };
       if (input.action === 'list') {
         if (input.cursor != null && (typeof input.cursor !== 'string' || input.cursor.length > 2048))
           throw new RequestError(422, 'invalid_cursor');
-        const result = await httpCall(
+        const result = await storage(
           collection + '/query',
-          credential,
           postJSON({ filters, limit: 20, cursor: input.cursor ?? null }),
         );
         json(res, 200, { items: result.items.map(project), next_cursor: result.next_cursor });
@@ -194,13 +209,13 @@ export function storageHandler({ gatewayOrigin, strongboxOrigin, bindings, subje
       let current;
       if (input.id !== undefined || input.action === 'download') {
         if (!/^rec_[a-f0-9]{32}$/.test(input.id ?? '')) throw new RequestError(422, 'invalid_record');
-        current = await httpCall(recordBase + '/' + input.id, credential);
+        current = await storage(recordBase + '/' + input.id);
         if (current.data?.program_id !== input.program_id || current.data?.row_id !== input.row_id)
           throw new RequestError(404, 'not_found');
       }
       if (input.action === 'download') {
         if (!profile.files || !current.attachment_id) throw new RequestError(404, 'not_found');
-        const bytes = await httpCall(app + '/blobs/' + current.attachment_id + '/content', credential, {
+        const bytes = await storage(app + '/blobs/' + current.attachment_id + '/content', {
           raw: true,
           limit: fileLimit,
         });
@@ -242,7 +257,7 @@ export function storageHandler({ gatewayOrigin, strongboxOrigin, bindings, subje
           createHash('sha256')
             .update(JSON.stringify([input.operation_id, filters]))
             .digest('hex');
-        const blob = await httpCall(app + '/blobs', credential, {
+        const blob = await storage(app + '/blobs', {
           method: 'POST',
           body: bytes,
           headers: {
@@ -258,11 +273,7 @@ export function storageHandler({ gatewayOrigin, strongboxOrigin, bindings, subje
       const options = postJSON(payload, opts);
       options.method = current ? 'PUT' : 'POST';
       try {
-        const saved = await httpCall(
-          recordBase + (current ? '/' + current.id : ''),
-          credential,
-          options,
-        );
+        const saved = await storage(recordBase + (current ? '/' + current.id : ''), options);
         json(res, current ? 200 : 201, project(saved));
       } catch (e) {
         // A final rejection leaves no committed record. A timeout can hide a successful
@@ -273,7 +284,7 @@ export function storageHandler({ gatewayOrigin, strongboxOrigin, bindings, subje
           ([403, 404, 412, 422, 507].includes(e.status) || e.code === 'idempotency_key_reused')
         ) {
           try {
-            await httpCall(app + '/blobs/' + payload.attachment_id, credential, {
+            await storage(app + '/blobs/' + payload.attachment_id, {
               method: 'DELETE',
               headers: { 'Idempotency-Key': 'discard-' + payload.attachment_id },
             });

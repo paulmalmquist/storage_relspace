@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { profiles, httpCall, origin } from './storage.mjs';
 export async function provisionCollection(strongbox, token, { strongboxApp, profile, marking }) {
-  if (!/^[a-z][a-z0-9_-]{1,62}$/.test(strongboxApp) || !Object.hasOwn(profiles, profile) || !marking)
+  if (!/^[a-z][a-z0-9-]{1,39}$/.test(strongboxApp) || !Object.hasOwn(profiles, profile) || !marking)
     throw Error('Invalid binding');
   const p = profiles[profile],
     base = origin(strongbox) + '/v1/apps/' + strongboxApp + '/collections';
