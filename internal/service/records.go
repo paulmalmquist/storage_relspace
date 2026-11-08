@@ -769,6 +769,15 @@ func (r *Records) writable(ctx context.Context, tx pgx.Tx, c Ctx, a *Access, col
 func (r *Records) Create(ctx context.Context, c Ctx, coll string, in RecordInput) (*Record, error) {
 	var out *Record
 	err := r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
+		var err error
+		out, err = r.createTx(ctx, c, tx, a, coll, in)
+		return err
+	})
+	return out, err
+}
+func (r *Records) createTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, coll string, in RecordInput) (*Record, error) {
+	var out *Record
+	err := func() error {
 		if err := lockContract(ctx, tx, c.App, coll, false); err != nil {
 			return err
 		}
@@ -832,7 +841,7 @@ func (r *Records) Create(ctx context.Context, c Ctx, coll string, in RecordInput
 		}
 		out, err = r.view(ctx, tx, c, col, rr)
 		return err
-	})
+	}()
 	return out, err
 }
 
@@ -874,6 +883,15 @@ func (r *Records) Get(ctx context.Context, c Ctx, coll, id string) (*Record, err
 func (r *Records) Update(ctx context.Context, c Ctx, coll, id string, in RecordInput, expectedVersion int) (*Record, error) {
 	var out *Record
 	err := r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
+		var err error
+		out, err = r.updateTx(ctx, c, tx, a, coll, id, in, expectedVersion)
+		return err
+	})
+	return out, err
+}
+func (r *Records) updateTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, coll, id string, in RecordInput, expectedVersion int) (*Record, error) {
+	var out *Record
+	err := func() error {
 		if err := lockContract(ctx, tx, c.App, coll, false); err != nil {
 			return err
 		}
@@ -953,7 +971,7 @@ func (r *Records) Update(ctx context.Context, c Ctx, coll, id string, in RecordI
 		}
 		out, err = r.view(ctx, tx, c, col, nr)
 		return err
-	})
+	}()
 	return out, err
 }
 
@@ -961,69 +979,70 @@ func (r *Records) Update(ctx context.Context, c Ctx, coll, id string, in RecordI
 // versions until history expiry or purge. expectedVersion nil deletes whatever version is current,
 // still atomically. purge removes the row and its history.
 func (r *Records) Delete(ctx context.Context, c Ctx, coll, id string, expectedVersion *int, purge bool) error {
-	return r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
-		col, err := r.readableCollection(ctx, tx, c, coll, false)
+	return r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error { return r.deleteTx(ctx, c, tx, a, coll, id, expectedVersion, purge) })
+}
+func (r *Records) deleteTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, coll, id string, expectedVersion *int, purge bool) error {
+	col, err := r.readableCollection(ctx, tx, c, coll, false)
+	if err != nil {
+		return err
+	}
+	ev := -1
+	if expectedVersion != nil {
+		ev = *expectedVersion
+	}
+	if rc, err := r.receipts.claim(ctx, tx, c, Operation{Type: "record.delete", Target: coll + "/" + id, ExpectedVersion: ev,
+		Payload: map[string]any{"purge": purge}}, 0, ""); err != nil || rc != nil {
+		return err // a replayed delete succeeded before
+	}
+	rr, m, err := r.writable(ctx, tx, c, a, col, id, PermManage, auth.RecordDelete, false)
+	if err != nil {
+		return err
+	}
+	if expectedVersion != nil && rr.version != *expectedVersion {
+		return errs.PreconditionFailed("record is at version %d, not %d", rr.version, *expectedVersion)
+	}
+	if _, err := r.check(ctx, tx, c, auth.RecordDelete, "record", id, &m, checkOpts{noConceal: true, skipAllow: true}); err != nil {
+		return err
+	}
+	if purge {
+		tag, err := tx.Exec(ctx, `DELETE FROM records WHERE app=$1 AND collection=$2 AND id=$3 AND version=$4`,
+			c.App, col.Name, id, rr.version)
+		if err == nil && tag.RowsAffected() != 1 {
+			err = errs.PreconditionFailed("record changed concurrently")
+		}
 		if err != nil {
 			return err
 		}
-		ev := -1
-		if expectedVersion != nil {
-			ev = *expectedVersion
-		}
-		if rc, err := r.receipts.claim(ctx, tx, c, Operation{Type: "record.delete", Target: coll + "/" + id, ExpectedVersion: ev,
-			Payload: map[string]any{"purge": purge}}, 0, ""); err != nil || rc != nil {
-			return err // a replayed delete succeeded before
-		}
-		rr, m, err := r.writable(ctx, tx, c, a, col, id, PermManage, auth.RecordDelete, false)
-		if err != nil {
-			return err
-		}
-		if expectedVersion != nil && rr.version != *expectedVersion {
-			return errs.PreconditionFailed("record is at version %d, not %d", rr.version, *expectedVersion)
-		}
-		if _, err := r.check(ctx, tx, c, auth.RecordDelete, "record", id, &m, checkOpts{noConceal: true, skipAllow: true}); err != nil {
-			return err
-		}
-		if purge {
-			tag, err := tx.Exec(ctx, `DELETE FROM records WHERE app=$1 AND collection=$2 AND id=$3 AND version=$4`,
-				c.App, col.Name, id, rr.version)
-			if err == nil && tag.RowsAffected() != 1 {
-				err = errs.PreconditionFailed("record changed concurrently")
-			}
-			if err != nil {
-				return err
-			}
-		} else {
-			nr, err := scanRecord(tx.QueryRow(ctx, `UPDATE records SET deleted_at=now(), version=version+1, data_plain=NULL,
+	} else {
+		nr, err := scanRecord(tx.QueryRow(ctx, `UPDATE records SET deleted_at=now(), version=version+1, data_plain=NULL,
 				data_sealed=NULL, key_id=NULL, updated_by=$5, updated_at=now()
 				WHERE app=$1 AND collection=$2 AND id=$3 AND version=$4 AND deleted_at IS NULL RETURNING `+recordCols,
-				c.App, col.Name, id, rr.version, c.Principal.Subject))
-			if errors.Is(err, pgx.ErrNoRows) {
-				return errs.PreconditionFailed("record changed concurrently")
-			}
-			if err != nil {
-				return err
-			}
-			if _, err := tx.Exec(ctx, `DELETE FROM record_index WHERE app=$1 AND record_id=$2`, c.App, id); err != nil {
-				return err
-			}
-			// A deleted record releases its unique values.
-			if _, err := tx.Exec(ctx, `DELETE FROM record_unique WHERE app=$1 AND record_id=$2`, c.App, id); err != nil {
-				return err
-			}
-			if err := r.revision(ctx, tx, c, col, nr, "delete", 0); err != nil {
-				return err
-			}
+			c.App, col.Name, id, rr.version, c.Principal.Subject))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errs.PreconditionFailed("record changed concurrently")
 		}
-		if err := r.receipts.complete(ctx, tx, c, "record", id, rr.version+1, map[string]any{"deleted": true, "purged": purge}); err != nil {
+		if err != nil {
 			return err
 		}
-		reason := "record deleted"
-		if purge {
-			reason = "record and history purged"
+		if _, err := tx.Exec(ctx, `DELETE FROM record_index WHERE app=$1 AND record_id=$2`, c.App, id); err != nil {
+			return err
 		}
-		return r.note(ctx, tx, c, auth.RecordDelete, "record", id, "allow", reason, &m, map[string]any{"collection": col.Name, "purge": purge})
-	})
+		// A deleted record releases its unique values.
+		if _, err := tx.Exec(ctx, `DELETE FROM record_unique WHERE app=$1 AND record_id=$2`, c.App, id); err != nil {
+			return err
+		}
+		if err := r.revision(ctx, tx, c, col, nr, "delete", 0); err != nil {
+			return err
+		}
+	}
+	if err := r.receipts.complete(ctx, tx, c, "record", id, rr.version+1, map[string]any{"deleted": true, "purged": purge}); err != nil {
+		return err
+	}
+	reason := "record deleted"
+	if purge {
+		reason = "record and history purged"
+	}
+	return r.note(ctx, tx, c, auth.RecordDelete, "record", id, "allow", reason, &m, map[string]any{"collection": col.Name, "purge": purge})
 }
 
 // Query lists records newest first, optionally filtered by equality on indexed fields.

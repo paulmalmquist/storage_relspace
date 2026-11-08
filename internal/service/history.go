@@ -198,6 +198,15 @@ func (r *Records) revisionRecord(ctx context.Context, tx pgx.Tx, c Ctx, col *Col
 func (r *Records) Restore(ctx context.Context, c Ctx, coll, id string, version, expectedVersion int) (*Record, error) {
 	var out *Record
 	err := r.inApp(ctx, c, func(tx pgx.Tx, a *Access) error {
+		var err error
+		out, err = r.restoreTx(ctx, c, tx, a, coll, id, version, expectedVersion)
+		return err
+	})
+	return out, err
+}
+func (r *Records) restoreTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, coll, id string, version, expectedVersion int) (*Record, error) {
+	var out *Record
+	err := func() error {
 		if err := lockContract(ctx, tx, c.App, coll, false); err != nil {
 			return err
 		}
@@ -297,7 +306,7 @@ func (r *Records) Restore(ctx context.Context, c Ctx, coll, id string, version, 
 		}
 		out, err = r.view(ctx, tx, c, col, nr)
 		return err
-	})
+	}()
 	return out, err
 }
 
