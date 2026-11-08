@@ -283,7 +283,7 @@ func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app,
 
 func objectPath(dir, key string) (string, error) {
 	clean := filepath.Clean(key)
-	if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
+	if !filepath.IsLocal(key) || filepath.ToSlash(clean) != key || strings.HasPrefix(clean, "..") {
 		return "", fmt.Errorf("object key %q escapes the export", key)
 	}
 	return filepath.Join(dir, "objects", clean), nil
@@ -407,15 +407,25 @@ func Validate(dir string) (*Manifest, *Report, error) {
 		return nil, nil, err
 	}
 	rep := &Report{App: m.App}
+	if !store.ValidApp(m.App) {
+		rep.addf("invalid app identity")
+	}
 	known := map[string]bool{}
 	for _, t := range tables {
 		known[t.name] = true
 	}
+	seen := map[string]bool{}
+	referenced := map[string]bool{}
 	for _, t := range m.Tables {
 		if !known[t.Name] {
 			rep.addf("table %s is not part of format_version %d", t.Name, FormatVersion)
 			continue
 		}
+		if seen[t.Name] || t.File != "tables/"+t.Name+".ndjson" {
+			rep.addf("duplicate table or noncanonical file for %s", t.Name)
+			continue
+		}
+		seen[t.Name] = true
 		sum, rows, _, err := digestFile(filepath.Join(dir, t.File))
 		switch {
 		case err != nil:
@@ -427,6 +437,27 @@ func Validate(dir string) (*Manifest, *Report, error) {
 		}
 		rep.Tables++
 		rep.Rows += rows
+		if err := eachLine(filepath.Join(dir, t.File), func(raw []byte) error {
+			if err := rowScope(t.Name, m.App, raw); err != nil {
+				return err
+			}
+			if t.Name == "blobs" || t.Name == "blob_parts" {
+				row, _ := decodeRow(raw)
+				referenced[stringColumn(row, "storage_key")] = true
+			}
+			return nil
+		}); err != nil {
+			rep.addf("%s: %v", t.File, err)
+		}
+	}
+	for _, t := range tables {
+		if !seen[t.name] {
+			rep.addf("missing table %s", t.name)
+		}
+	}
+	if m.Objects.File != "objects.ndjson" {
+		rep.addf("noncanonical object inventory file")
+		return m, rep, nil
 	}
 	sum, _, _, err := digestFile(filepath.Join(dir, m.Objects.File))
 	if err != nil || sum != m.Objects.SHA256 {
@@ -438,6 +469,14 @@ func Validate(dir string) (*Manifest, *Report, error) {
 		var o ObjectEntry
 		if err := json.Unmarshal(b, &o); err != nil {
 			return err
+		}
+		if !referenced[o.Key] {
+			rep.addf("object %s is not referenced by this app", o.Key)
+			return nil
+		}
+		if _, exists := objects[o.Key]; exists {
+			rep.addf("duplicate object %s", o.Key)
+			return nil
 		}
 		path, err := objectPath(dir, o.Key)
 		if err != nil {
@@ -550,38 +589,7 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, dir
 	if target := identity(ctx, pool); target == m.Source {
 		return nil, errors.New("the target is the export's source database; restore only into a separate database")
 	}
-	if !dryRun {
-		// Objects first: if the database step then fails, the target holds unreferenced objects,
-		// never rows that point at missing ones.
-		err := eachLine(filepath.Join(dir, m.Objects.File), func(b []byte) error {
-			var o ObjectEntry
-			if err := json.Unmarshal(b, &o); err != nil {
-				return err
-			}
-			path, err := objectPath(dir, o.Key)
-			if err != nil {
-				return err
-			}
-			f, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-			w, err := backend.OpenWriter(ctx, o.Key)
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(w, f); err != nil {
-				_ = w.Abort()
-				return err
-			}
-			out.Objects++
-			return w.Commit()
-		})
-		if err != nil {
-			return out, fmt.Errorf("copying objects: %w", err)
-		}
-	}
+
 	errRollback := errors.New("dry run")
 	err = ownerTx(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SET CONSTRAINTS ALL DEFERRED`); err != nil {
@@ -613,6 +621,39 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, dir
 		if _, err := tx.Exec(ctx, `SET CONSTRAINTS ALL IMMEDIATE`); err != nil {
 			return err
 		}
+		if !dryRun {
+			// The app and every row have passed validation. Objects are copied before
+			// COMMIT, so readers never see rows pointing at objects not yet copied.
+			err := eachLine(filepath.Join(dir, m.Objects.File), func(b []byte) error {
+				var o ObjectEntry
+				if err := json.Unmarshal(b, &o); err != nil {
+					return err
+				}
+				path, err := objectPath(dir, o.Key)
+				if err != nil {
+					return err
+				}
+				f, err := os.Open(path)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
+				w, err := backend.OpenWriter(ctx, o.Key)
+				if err != nil {
+					return err
+				}
+				if _, err := io.Copy(w, f); err != nil {
+					_ = w.Abort()
+					return err
+				}
+				out.Objects++
+				return w.Commit()
+			})
+			if err != nil {
+				return fmt.Errorf("copying objects: %w", err)
+			}
+		}
+
 		if dryRun {
 			return errRollback
 		}

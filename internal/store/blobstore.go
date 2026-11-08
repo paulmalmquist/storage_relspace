@@ -32,6 +32,9 @@ import (
 // never appear as a segment. App-scoped objects live under apps/<app_id>/<env>/.
 var keyRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,120}(/[A-Za-z0-9][A-Za-z0-9._-]{0,120}){0,5}$`)
 
+// ValidStorageKey reports whether a key has the canonical object-store syntax.
+func ValidStorageKey(key string) bool { return keyRe.MatchString(key) }
+
 func checkKey(key string) error {
 	if !keyRe.MatchString(key) {
 		return fmt.Errorf("invalid storage key %q", key)
