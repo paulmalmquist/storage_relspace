@@ -77,8 +77,9 @@ type Worker struct {
 	Lease    time.Duration
 	Interval time.Duration
 
-	mu   sync.Mutex
-	last WorkerStats
+	mu       sync.Mutex
+	last     WorkerStats
+	afterApp string // last ready app considered by a committed dispatch pass
 }
 
 // LastStats is the most recent completed pass (metrics read it concurrently).
@@ -178,22 +179,57 @@ type job struct {
 	Max      int
 }
 
+const jobReady = `status IN ('pending','leased') AND available_at <= now()
+	AND (status='pending' OR lease_expires < now())`
+
+// Materializing the locked IDs matters. PostgreSQL can rescan an IN (SELECT ...
+// LIMIT ... FOR UPDATE SKIP LOCKED) subplan as the UPDATE changes qualifying rows.
+func (w *Worker) leaseJobs(ctx context.Context, tx pgx.Tx, pick string, args ...any) ([]job, error) {
+	rows, err := tx.Query(ctx, `WITH picked AS MATERIALIZED (`+pick+`)
+		UPDATE outbox o SET status='leased', lease_owner=$1, lease_expires=$2,
+			attempts=o.attempts+1, updated_at=now() FROM picked WHERE o.id=picked.id
+		RETURNING o.id,o.app,o.kind,o.payload,o.attempts,o.max_attempts`, args...)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[job])
+}
+
+// Give each eligible app a share, then spend unused slots on the oldest remaining
+// work. Round-robin selection matters when there are more ready apps than slots.
+func (w *Worker) claimJobs(ctx context.Context, tx pgx.Tx, after string) ([]job, string, error) {
+	rows, err := tx.Query(ctx, `SELECT a.app FROM apps a WHERE a.status<>'legacy' AND EXISTS(
+		SELECT 1 FROM outbox WHERE app=a.app AND `+jobReady+`)
+		ORDER BY (a.app <= $1),a.app LIMIT $2`, after, w.Batch)
+	if err != nil {
+		return nil, after, err
+	}
+	apps, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(apps) == 0 {
+		return nil, after, err
+	}
+	until := time.Now().Add(w.Lease)
+	jobs, err := w.leaseJobs(ctx, tx, `SELECT q.id FROM unnest($4::text[]) a(app)
+		CROSS JOIN LATERAL (SELECT id FROM outbox WHERE app=a.app AND `+jobReady+`
+			ORDER BY available_at,id LIMIT $3 FOR UPDATE SKIP LOCKED) q`, w.ID, until, w.Batch/len(apps), apps)
+	if err == nil && len(jobs) < w.Batch {
+		var extra []job
+		extra, err = w.leaseJobs(ctx, tx, `SELECT id FROM outbox WHERE app<>'_legacy' AND `+jobReady+`
+			ORDER BY available_at,id LIMIT $3 FOR UPDATE SKIP LOCKED`, w.ID, until, w.Batch-len(jobs))
+		jobs = append(jobs, extra...)
+	}
+	return jobs, apps[len(apps)-1], err
+}
+
 func (w *Worker) dispatch(ctx context.Context, s *WorkerStats) error {
+	w.mu.Lock()
+	after := w.afterApp
+	w.mu.Unlock()
 	var jobs []job
+	var next string
 	err := w.core.DB.Run(ctx, w.dispatcher(), func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `UPDATE outbox SET status = 'leased', lease_owner = $1, lease_expires = $2,
-			attempts = attempts + 1, updated_at = now()
-			WHERE id IN (SELECT id FROM outbox
-				WHERE available_at <= now() AND (status = 'pending' OR (status = 'leased' AND lease_expires < now()))
-				ORDER BY available_at, id LIMIT $3 FOR UPDATE SKIP LOCKED)
-			RETURNING id, app, kind, payload, attempts, max_attempts`, w.ID, time.Now().Add(w.Lease), w.Batch)
-		if err != nil {
-			return err
-		}
-		jobs, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (job, error) {
-			var j job
-			return j, r.Scan(&j.ID, &j.App, &j.Kind, &j.Payload, &j.Attempts, &j.Max)
-		})
+		var err error
+		jobs, next, err = w.claimJobs(ctx, tx, after)
 		if err != nil {
 			return err
 		}
@@ -214,6 +250,9 @@ func (w *Worker) dispatch(ctx context.Context, s *WorkerStats) error {
 	if err != nil {
 		return err
 	}
+	w.mu.Lock()
+	w.afterApp = next
+	w.mu.Unlock()
 	for _, j := range jobs {
 		runErr := w.execute(ctx, j)
 		err := w.core.DB.Run(ctx, w.dispatcher(), func(tx pgx.Tx) error {
