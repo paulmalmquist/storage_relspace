@@ -57,9 +57,10 @@ func TestSaveResponseIsTheWrittenVersion(t *testing.T) {
 				if i%2 == 1 {
 					m = expt
 				}
+				m = markings.Combine([]markings.Marking{cur.Marking, m})
 				status := []string{"open", "dispositioned"}[i%2]
 				got, err := env.C.Records.Update(ctx, eng, "ncr", r.ID, service.RecordInput{
-					Data: doc(`{"part_number":"A","status":"` + status + `"}`), Marking: &m}, cur.Version)
+					Data: map[string]any{"part_number": "A", "status": status, "defect": m.Banner()}, Marking: &m}, cur.Version)
 				if err == nil {
 					results <- got
 					return
@@ -75,9 +76,9 @@ func TestSaveResponseIsTheWrittenVersion(t *testing.T) {
 			t.Fatalf("two writers got version %d", got.Version)
 		}
 		versions[got.Version] = true
-		// The returned data and marking belong together: odd writers wrote NOFORN + dispositioned.
-		noforn := got.Marking.Equal(expt)
-		if noforn != (got.Data["status"] == "dispositioned") {
+		// The returned data and marking belong to the same writer. Each writer preserves
+		// any classification another writer has already raised.
+		if got.Marking.Banner() != got.Data["defect"] {
 			t.Fatalf("version %d returned %v with marking %s", got.Version, got.Data, got.Marking.Banner())
 		}
 	}
