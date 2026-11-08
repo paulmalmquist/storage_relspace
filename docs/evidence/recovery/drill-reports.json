@@ -1,0 +1,233 @@
+{
+  "synthetic": true,
+  "reports": [
+    {
+      "app": "acme:test",
+      "started_at": "2026-11-08T02:16:01.675761891Z",
+      "snapshot_at": "2026-11-07T21:16:00.833652-05:00",
+      "snapshot_age_seconds": 0.842109891,
+      "phase_seconds": {
+        "audit": 0.005472805,
+        "decrypt": 0.055281101,
+        "dry_run": 0.290985352,
+        "restore": 0.178235145,
+        "total": 0.550208726,
+        "usage": 0.011696484
+      },
+      "restored": true,
+      "passed": true,
+      "restore": {
+        "app": "acme:test",
+        "dry_run": false,
+        "rows": {
+          "app_clients": 3,
+          "app_members": 8,
+          "app_quotas": 0,
+          "apps": 1,
+          "audit_events": 6,
+          "audit_heads": 3,
+          "blob_parts": 1,
+          "blobs": 2,
+          "collection_migrations": 0,
+          "collection_versions": 1,
+          "collections": 1,
+          "data_keys": 2,
+          "operation_receipts": 0,
+          "outbox": 0,
+          "principals": 8,
+          "record_index": 0,
+          "record_revisions": 2,
+          "record_unique": 0,
+          "records": 1,
+          "resource_grants": 0,
+          "team_members": 0,
+          "teams": 0
+        },
+        "objects": 2
+      },
+      "decrypt": {
+        "app": "acme:test",
+        "records": 1,
+        "revisions": 2,
+        "blobs": 1,
+        "blob_bytes": 21,
+        "problems": null
+      },
+      "usage": {
+        "app": "acme:test",
+        "quota": {
+          "max_blob_bytes": null,
+          "max_blobs": null,
+          "max_records": null,
+          "max_record_bytes": null
+        },
+        "blob_bytes": 21,
+        "blobs": 1,
+        "reserved_bytes": 2,
+        "reservations": 1,
+        "records": 1,
+        "record_bytes": 18,
+        "revisions": 2,
+        "revision_bytes": 34,
+        "deleted_records": 0,
+        "collections": 1,
+        "recount": {
+          "blob_bytes": 21,
+          "reserved_bytes": 2,
+          "reservations": 1,
+          "blobs": 1,
+          "records": 1,
+          "record_bytes": 18
+        },
+        "drift": false
+      },
+      "audit": {
+        "ok": true,
+        "chains": [
+          {
+            "chain": "app:acme:test:1",
+            "ok": true,
+            "checked": 1,
+            "head_seq": 1,
+            "first_invalid_seq": null
+          },
+          {
+            "chain": "app:acme:test:2",
+            "ok": true,
+            "checked": 2,
+            "head_seq": 2,
+            "first_invalid_seq": null
+          },
+          {
+            "chain": "app:acme:test:3",
+            "ok": true,
+            "checked": 3,
+            "head_seq": 3,
+            "first_invalid_seq": null
+          },
+          {
+            "chain": "global",
+            "ok": true,
+            "checked": 0,
+            "head_seq": 0,
+            "first_invalid_seq": null
+          }
+        ]
+      }
+    },
+    {
+      "app": "acme:test",
+      "started_at": "2026-11-08T02:16:02.845515372Z",
+      "snapshot_at": "2026-11-07T21:16:00.833652-05:00",
+      "snapshot_age_seconds": 2.011863372,
+      "phase_seconds": {
+        "audit": 0.00352636,
+        "decrypt": 0.083114155,
+        "dry_run": 0.279599857,
+        "restore": 0.280311099,
+        "total": 0.662468569,
+        "usage": 0.014077045
+      },
+      "restored": true,
+      "passed": true,
+      "restore": {
+        "app": "acme:test",
+        "dry_run": false,
+        "rows": {
+          "app_clients": 3,
+          "app_members": 8,
+          "app_quotas": 0,
+          "apps": 1,
+          "audit_events": 6,
+          "audit_heads": 3,
+          "blob_parts": 1,
+          "blobs": 2,
+          "collection_migrations": 0,
+          "collection_versions": 1,
+          "collections": 1,
+          "data_keys": 2,
+          "operation_receipts": 0,
+          "outbox": 0,
+          "principals": 8,
+          "record_index": 0,
+          "record_revisions": 2,
+          "record_unique": 0,
+          "records": 1,
+          "resource_grants": 0,
+          "team_members": 0,
+          "teams": 0
+        },
+        "objects": 2
+      },
+      "decrypt": {
+        "app": "acme:test",
+        "records": 1,
+        "revisions": 2,
+        "blobs": 1,
+        "blob_bytes": 21,
+        "problems": null
+      },
+      "usage": {
+        "app": "acme:test",
+        "quota": {
+          "max_blob_bytes": null,
+          "max_blobs": null,
+          "max_records": null,
+          "max_record_bytes": null
+        },
+        "blob_bytes": 21,
+        "blobs": 1,
+        "reserved_bytes": 2,
+        "reservations": 1,
+        "records": 1,
+        "record_bytes": 18,
+        "revisions": 2,
+        "revision_bytes": 34,
+        "deleted_records": 0,
+        "collections": 1,
+        "recount": {
+          "blob_bytes": 21,
+          "reserved_bytes": 2,
+          "reservations": 1,
+          "blobs": 1,
+          "records": 1,
+          "record_bytes": 18
+        },
+        "drift": false
+      },
+      "audit": {
+        "ok": true,
+        "chains": [
+          {
+            "chain": "app:acme:test:1",
+            "ok": true,
+            "checked": 1,
+            "head_seq": 1,
+            "first_invalid_seq": null
+          },
+          {
+            "chain": "app:acme:test:2",
+            "ok": true,
+            "checked": 2,
+            "head_seq": 2,
+            "first_invalid_seq": null
+          },
+          {
+            "chain": "app:acme:test:3",
+            "ok": true,
+            "checked": 3,
+            "head_seq": 3,
+            "first_invalid_seq": null
+          },
+          {
+            "chain": "global",
+            "ok": true,
+            "checked": 0,
+            "head_seq": 0,
+            "first_invalid_seq": null
+          }
+        ]
+      }
+    }
+  ]
+}

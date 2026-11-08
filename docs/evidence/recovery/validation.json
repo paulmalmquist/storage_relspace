@@ -1,0 +1,32 @@
+{
+  "base": "e9aca12f0763d854686cde28e8af5e3b1a604802",
+  "integration_required": true,
+  "race_detector": true,
+  "go": "1.26.10",
+  "postgresql": "16.15",
+  "node": "22.18.0",
+  "runs": {
+    "enforced-fips": {
+      "tests": 203,
+      "top_level": 194,
+      "passed_packages": 15,
+      "skipped_tests": 0,
+      "failures": 0
+    },
+    "frozen-v1.0.0": {
+      "tests": 203,
+      "top_level": 194,
+      "passed_packages": 15,
+      "skipped_tests": 0,
+      "failures": 0
+    }
+  },
+  "typescript": {
+    "live_tests_passed": 9,
+    "skipped": 0,
+    "typecheck": "pass",
+    "generated_types_match": true,
+    "example": "pass"
+  },
+  "provider_validation": "Local PostgreSQL/files/keys and HTTP-faked GCS generation requests; no cloud resources accessed"
+}

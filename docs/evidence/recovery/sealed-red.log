@@ -1,0 +1,10 @@
+=== RUN   TestSealedExportRecoversPlainCollectionsWithoutPlaintextFiles
+    sealed_test.go:30: format 1 export refuses plaintext record data; use encrypted collections
+--- FAIL: TestSealedExportRecoversPlainCollectionsWithoutPlaintextFiles (0.29s)
+=== RUN   TestSealedExportDoesNotExposeRegistryOrSchema
+    sealed_test.go:96: registry plaintext in /tmp/TestSealedExportDoesNotExposeRegistryOrSchema4156839010/002/tables/app_members.ndjson
+    sealed_test.go:96: registry plaintext in /tmp/TestSealedExportDoesNotExposeRegistryOrSchema4156839010/002/tables/principals.ndjson
+--- FAIL: TestSealedExportDoesNotExposeRegistryOrSchema (0.23s)
+FAIL
+FAIL	github.com/paulmalmquist/storage_relspace/internal/backup	0.583s
+FAIL

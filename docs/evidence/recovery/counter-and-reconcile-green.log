@@ -1,0 +1,20 @@
+=== RUN   TestReconcileDryRunAndQueuedGenerationCleanup
+2026/11/07 21:06:37 INFO audit audit=true chain=app:acme:test:1 app=0xc0004f1800 seq=1 ts=2026-11-08T02:06:37.785032Z actor=test-reconciliation on_behalf_of=<nil> action=object.reconcile resource_type=object resource_id=0xc0004f1810 marking=<nil> decision=allow reason="unreferenced generation queued for conditional cleanup" request_id=<nil> hash=59035351b8d5ebaf907e40789951178c1ce9919632e75948f5dde4e264e66134
+--- PASS: TestReconcileDryRunAndQueuedGenerationCleanup (0.38s)
+=== RUN   TestReconcileProtectsPendingUploadsAndChangedGenerations
+2026/11/07 21:06:38 INFO audit audit=true chain=app:acme:test:1 app=0xc000601610 seq=1 ts=2026-11-08T02:06:38.150974Z actor=test-reconciliation on_behalf_of=<nil> action=object.reconcile resource_type=object resource_id=0xc000601620 marking=<nil> decision=allow reason="unreferenced generation queued for conditional cleanup" request_id=<nil> hash=50caf66dd67a2c0689af7a69da4a69f8fc67d9ac48dca4c97818259bdf182946
+2026/11/07 21:06:38 INFO audit audit=true chain=app:acme:test:0 app=0xc00036b0f0 seq=1 ts=2026-11-08T02:06:38.127059Z actor=engineer@rel.test on_behalf_of=<nil> action=blob.create resource_type=blob resource_id=0xc00036b110 marking=0xc00036b130 decision=allow reason="upload session started" request_id=0xc00036b100 hash=ce42f73499daed4877f94507a2eabd4c75ea7a72f3c85c78739be32cbfea3c9f
+--- PASS: TestReconcileProtectsPendingUploadsAndChangedGenerations (0.36s)
+=== RUN   TestReconcileMissingFilesAndCursorScope
+--- PASS: TestReconcileMissingFilesAndCursorScope (0.31s)
+=== RUN   TestReconcileWorkerRechecksReferencesAndScope
+2026/11/07 21:06:38 INFO audit audit=true chain=app:acme:test:2 app=0xc000123310 seq=1 ts=2026-11-08T02:06:38.766673Z actor=test-reconciliation on_behalf_of=<nil> action=object.reconcile resource_type=object resource_id=0xc000123320 marking=<nil> decision=allow reason="unreferenced generation queued for conditional cleanup" request_id=<nil> hash=07c26713fa9f4d3deefe54f207aaad1e6a931e66a3f297f1a538bbd3de8dd0b1
+2026/11/07 21:06:38 INFO audit audit=true chain=app:acme:test:0 app=0xc00034b7d0 seq=1 ts=2026-11-08T02:06:38.785016Z actor=engineer@rel.test on_behalf_of=<nil> action=blob.create resource_type=blob resource_id=0xc00034b7f0 marking=0xc00034b800 decision=allow reason="upload session started" request_id=0xc00034b7e0 hash=54acb3b62ba0e39a1a4c931921e8774e0aa9d92fc3d12ede82433f63cb359c36
+2026/11/07 21:06:38 ERROR outbox job dead job=2 app=acme:test kind=object.orphan_delete attempts=1 error="orphan deletion outside app scope or without a generation"
+--- PASS: TestReconcileWorkerRechecksReferencesAndScope (0.39s)
+=== RUN   TestUsageRecountIncludesReservations
+--- PASS: TestUsageRecountIncludesReservations (0.27s)
+=== RUN   TestUsageRepairLocksBeforeTakingItsSnapshot
+--- PASS: TestUsageRepairLocksBeforeTakingItsSnapshot (0.52s)
+PASS
+ok  	github.com/paulmalmquist/storage_relspace/internal/admin	3.466s

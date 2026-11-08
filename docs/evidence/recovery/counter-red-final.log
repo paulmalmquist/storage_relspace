@@ -1,0 +1,9 @@
+=== RUN   TestUsageRecountIncludesReservations
+    reservation_review_test.go:26: reservation drift was not detected
+--- FAIL: TestUsageRecountIncludesReservations (0.36s)
+=== RUN   TestUsageRepairLocksBeforeTakingItsSnapshot
+    reservation_review_test.go:116: repair wrote stale totals after a concurrent upload: &{App:acme:test Quota:{MaxBlobBytes:<nil> MaxBlobs:<nil> MaxRecords:<nil> MaxRecordBytes:<nil>} BlobBytes:8 Blobs:1 ReservedBytes:0 Reservations:0 Records:1 RecordBytes:8 Revisions:1 RevisionBytes:7 DeletedRecords:0 Collections:1 Recount:0xc00035a4c0 Drift:true} <nil>
+--- FAIL: TestUsageRepairLocksBeforeTakingItsSnapshot (0.40s)
+FAIL
+FAIL	github.com/paulmalmquist/storage_relspace/internal/admin	0.829s
+FAIL

@@ -1,0 +1,95 @@
+NOTICE:  database "strongbox_contract" does not exist, skipping
+created local keyring /tmp/tmp.dejPfOpgPu/keyring.json (development only)
+schema ready
+principal alice@example.com saved
+principal bob@example.com saved
+principal carol@example.com saved
+
+> @strongbox/client@0.3.0 check-generated
+> openapi-typescript ../../internal/api/openapi.json -o /tmp/strongbox-schema.d.ts && diff -u src/schema.d.ts /tmp/strongbox-schema.d.ts
+
+✨ openapi-typescript 7.13.0
+🚀 ../../internal/api/openapi.json → /tmp/strongbox-schema.d.ts [272.5ms]
+
+> @strongbox/client@0.3.0 typecheck
+> tsc --noEmit
+
+
+> @strongbox/client@0.3.0 test
+> node --test test/*.test.ts
+
+TAP version 13
+# Subtest: private state, team sharing, conflict recovery and undo
+ok 1 - private state, team sharing, conflict recovery and undo
+  ---
+  duration_ms: 314.222783
+  type: 'test'
+  ...
+# Subtest: a lost response is recovered with the same operation ID
+ok 2 - a lost response is recovered with the same operation ID
+  ---
+  duration_ms: 95.102498
+  type: 'test'
+  ...
+# Subtest: blobs: one request and an upload session
+ok 3 - blobs: one request and an upload session
+  ---
+  duration_ms: 377.80453
+  type: 'test'
+  ...
+# Subtest: a mutation is retried with the same operation ID after 503 and a lost connection
+ok 4 - a mutation is retried with the same operation ID after 503 and a lost connection
+  ---
+  duration_ms: 533.358302
+  type: 'test'
+  ...
+# Subtest: conflicts are not retried and surface as typed errors
+ok 5 - conflicts are not retried and surface as typed errors
+  ---
+  duration_ms: 1.52459
+  type: 'test'
+  ...
+# Subtest: retries are bounded
+ok 6 - retries are bounded
+  ---
+  duration_ms: 616.7556
+  type: 'test'
+  ...
+# Subtest: mutate re-reads and re-applies after a conflict
+ok 7 - mutate re-reads and re-applies after a conflict
+  ---
+  duration_ms: 12.222737
+  type: 'test'
+  ...
+# Subtest: an aborted call stops waiting
+ok 8 - an aborted call stops waiting
+  ---
+  duration_ms: 4.160631
+  type: 'test'
+  ...
+# Subtest: workload credentials refuse to run in a browser
+ok 9 - workload credentials refuse to run in a browser
+  ---
+  duration_ms: 0.721838
+  type: 'test'
+  ...
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1335.715151
+
+> @strongbox/client@0.3.0 example
+> node examples/demo.ts
+
+alice saved rec_73d6e84105ea5d736b7376a3ef88bcd5 (v1, private, CUI//SP-EXPT)
+bob cannot see it: private by default
+shared with team ops-notes_mw77as57 -> { items: [ 'fuel' ], title: 'Launch checklist' }
+alice's stale write was refused: record is at version 2, not 1
+merged v3: [ 'fuel', 'weather', 'range' ]
+undo to v2 wrote v4: [ 'fuel', 'weather' ]
+history: v4 restore, v3 update, v2 update, v1 create
