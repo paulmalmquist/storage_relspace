@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -255,6 +256,29 @@ func (w *Worker) execute(ctx context.Context, j job) error {
 	case "object.delete":
 		var p objectDeletePayload
 		if err := json.Unmarshal(j.Payload, &p); err != nil {
+			return err
+		}
+		// RLS constrains the queue row, not paths embedded in its payload. Resolve
+		// the blob inside the job's app before allowing any object-store effect.
+		if err := w.core.DB.Run(ctx, w.worker(j.App), func(tx pgx.Tx) error {
+			var root, layout string
+			var aad int
+			if err := tx.QueryRow(ctx, `SELECT storage_key, layout, aad_version FROM blobs WHERE app=$1 AND id=$2`,
+				j.App, p.BlobID).Scan(&root, &layout, &aad); err != nil {
+				return err
+			}
+			if !strings.HasPrefix(root, objectKey(j.App, p.BlobID, "")) &&
+				!(aad == 2 && !strings.Contains(root, "/")) {
+				return errors.New("outbox blob key is outside its app scope")
+			}
+			for _, key := range p.keys() {
+				if !store.ValidStorageKey(key) || (layout == "parts" && !strings.HasPrefix(key, root+"/")) ||
+					(layout != "parts" && key != root) {
+					return errors.New("outbox object key does not belong to its blob")
+				}
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
 		for _, key := range p.keys() {
