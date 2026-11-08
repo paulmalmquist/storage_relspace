@@ -402,10 +402,12 @@ type Usage struct {
 	DeletedRecords int64  `json:"deleted_records"`
 	Collections    int64  `json:"collections"`
 	Recount        *struct {
-		BlobBytes   int64 `json:"blob_bytes"`
-		Blobs       int64 `json:"blobs"`
-		Records     int64 `json:"records"`
-		RecordBytes int64 `json:"record_bytes"`
+		BlobBytes     int64 `json:"blob_bytes"`
+		ReservedBytes int64 `json:"reserved_bytes"`
+		Reservations  int64 `json:"reservations"`
+		Blobs         int64 `json:"blobs"`
+		Records       int64 `json:"records"`
+		RecordBytes   int64 `json:"record_bytes"`
 	} `json:"recount,omitempty"`
 	Drift bool `json:"drift"`
 }
@@ -415,6 +417,13 @@ type Usage struct {
 func (a *Admin) AppUsage(ctx context.Context, app string, recount, fix bool) (*Usage, error) {
 	u := &Usage{App: app}
 	err := a.tx(ctx, app, func(tx pgx.Tx) error {
+		// The scan must follow the lock; otherwise a concurrent committed upload
+		// can make a repair write stale blob totals back into the counters.
+		if fix {
+			if _, err := tx.Exec(ctx, `LOCK TABLE records,blobs IN SHARE MODE`); err != nil {
+				return err
+			}
+		}
 		if err := tx.QueryRow(ctx, `SELECT max_blob_bytes, max_blobs, max_records, max_record_bytes FROM app_quotas WHERE app = $1`, app).
 			Scan(&u.Quota.MaxBlobBytes, &u.Quota.MaxBlobs, &u.Quota.MaxRecords, &u.Quota.MaxRecordBytes); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -439,10 +448,12 @@ func (a *Admin) AppUsage(ctx context.Context, app string, recount, fix bool) (*U
 			return nil
 		}
 		rc := &struct {
-			BlobBytes   int64 `json:"blob_bytes"`
-			Blobs       int64 `json:"blobs"`
-			Records     int64 `json:"records"`
-			RecordBytes int64 `json:"record_bytes"`
+			BlobBytes     int64 `json:"blob_bytes"`
+			ReservedBytes int64 `json:"reserved_bytes"`
+			Reservations  int64 `json:"reservations"`
+			Blobs         int64 `json:"blobs"`
+			Records       int64 `json:"records"`
+			RecordBytes   int64 `json:"record_bytes"`
 		}{}
 		if err := tx.QueryRow(ctx, `SELECT coalesce(sum(size_bytes),0), count(*) FROM blobs WHERE app = $1 AND state = 'active'`, app).
 			Scan(&rc.BlobBytes, &rc.Blobs); err != nil {
@@ -452,15 +463,15 @@ func (a *Admin) AppUsage(ctx context.Context, app string, recount, fix bool) (*U
 			Scan(&rc.Records, &rc.RecordBytes); err != nil {
 			return err
 		}
+		if err := tx.QueryRow(ctx, `SELECT coalesce(sum(reserved_bytes),0),count(*) FROM blobs WHERE app=$1 AND state='pending'`, app).Scan(&rc.ReservedBytes, &rc.Reservations); err != nil {
+			return err
+		}
 		u.Recount = rc
-		u.Drift = rc.BlobBytes != u.BlobBytes || rc.Blobs != u.Blobs || rc.Records != u.Records || rc.RecordBytes != u.RecordBytes
+		u.Drift = rc.ReservedBytes != u.ReservedBytes || rc.Reservations != u.Reservations || rc.BlobBytes != u.BlobBytes || rc.Blobs != u.Blobs || rc.Records != u.Records || rc.RecordBytes != u.RecordBytes
 		if !fix || !u.Drift {
 			return nil
 		}
-		// Rewrite the counters from the scan, under locks that stop concurrent writers meanwhile.
-		if _, err := tx.Exec(ctx, `LOCK TABLE records, blobs IN SHARE MODE`); err != nil {
-			return err
-		}
+		// Rewrite from the scan made while writers were stopped.
 		if _, err := tx.Exec(ctx, `DELETE FROM record_usage WHERE app = $1`, app); err != nil {
 			return err
 		}
