@@ -34,6 +34,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/paulmalmquist/storage_relspace/internal/crypto"
 	"github.com/paulmalmquist/storage_relspace/internal/errs"
 	"github.com/paulmalmquist/storage_relspace/internal/store"
 )
@@ -180,7 +181,7 @@ func (h *hashingFile) close() error {
 }
 
 // Export writes app to dir (which must not exist or be empty).
-func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app, dir, actor, build string) (*Manifest, error) {
+func Export(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, app, dir, actor, build string, providers ...crypto.KeyProvider) (*Manifest, error) {
 	if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
 		return nil, fmt.Errorf("%s is not empty", dir)
 	}
@@ -632,7 +633,7 @@ type RestoreReport struct {
 // The target must be a different database from the export's source, migrated to the current
 // schema, and must not already contain the app. With dryRun, every row is inserted and every
 // constraint checked inside a transaction that is then rolled back, and no object is written.
-func Restore(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, dir string, dryRun bool) (*RestoreReport, error) {
+func Restore(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, dir string, dryRun bool, providers ...crypto.KeyProvider) (*RestoreReport, error) {
 	m, rep, err := Validate(dir)
 	if err != nil {
 		return nil, err
