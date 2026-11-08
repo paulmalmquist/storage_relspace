@@ -907,6 +907,9 @@ func (r *Records) Update(ctx context.Context, c Ctx, coll, id string, in RecordI
 		if m, err = recordMarking(col, &m); err != nil {
 			return err
 		}
+		if !m.Dominates(old) {
+			return errs.Invalid("record marking cannot be less restrictive than its current marking")
+		}
 		for _, mk := range []markings.Marking{old, m} {
 			if _, err := r.check(ctx, tx, c, auth.RecordUpdate, "record", id, &mk, checkOpts{noConceal: true, skipAllow: true}); err != nil {
 				return err

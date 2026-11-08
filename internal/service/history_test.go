@@ -75,9 +75,9 @@ func TestHistoryAuthorizedPerRevisionMarking(t *testing.T) {
 	ncr(t, env)
 	eng := env.Ctx(t, "engineer@rel.test")
 	r := must[*service.Record](t)(env.C.Records.Create(ctx, eng, "ncr", service.RecordInput{Data: doc(`{"part_number":"A","status":"open"}`),
-		Marking: &expt, Visibility: "app"}))
+		Marking: &cuiExpt, Visibility: "app"}))
 	must[*service.Record](t)(env.C.Records.Update(ctx, eng, "ncr", r.ID, service.RecordInput{Data: doc(`{"part_number":"A","status":"closed"}`),
-		Marking: &cuiExpt}, 1))
+		Marking: &expt}, 1))
 	foreign := env.Ctx(t, "foreign@rel.test") // may see CUI//SP-EXPT? no: SP-EXPT is export controlled
 	_, _, err := env.C.Records.History(ctx, foreign, "ncr", r.ID, 0, 0)
 	wantCode(t, err, "not_found")
