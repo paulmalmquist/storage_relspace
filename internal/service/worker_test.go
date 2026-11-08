@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/paulmalmquist/storage_relspace/internal/service"
@@ -85,4 +86,47 @@ func TestWorkerIsPinnedPerApp(t *testing.T) {
 		t.Fatalf("job enqueued for %s", app)
 	}
 	u.Abort("test")
+}
+
+// An app with old work must not consume every dispatch slot while another app is ready.
+func TestOutboxMakesProgressInEveryReadyApp(t *testing.T) {
+	for _, batch := range []int{1, 2} {
+		t.Run(fmt.Sprintf("batch%d", batch), func(t *testing.T) {
+			e, ctx := testenv.New(t), context.Background()
+			queue := func(c service.Ctx) string {
+				b := must[*service.BlobMeta](t)(e.C.Blobs.Put(ctx, c, []byte("fixture"), service.BlobInput{}))
+				if err := e.C.Blobs.Delete(ctx, c, b.ID, false); err != nil {
+					t.Fatal(err)
+				}
+				return b.ID
+			}
+			for range 6 {
+				queue(e.Ctx(t, "engineer@rel.test"))
+			}
+			e.Admin(t, `UPDATE outbox SET available_at=now()-interval '1 hour' WHERE app=$1`, testenv.App)
+			quiet := queue(e.CtxIn(t, testenv.Other, "outsider@rel.test"))
+			var n int
+			if err := e.Migrator.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE status='pending'`).Scan(&n); err != nil || n != 7 {
+				t.Fatalf("fixture: %d pending jobs, %v", n, err)
+			}
+			e.C.Worker.Batch = batch
+			for range (2 + batch - 1) / batch {
+				stats := must[service.WorkerStats](t)(e.C.Worker.RunOnce(ctx))
+				if stats.JobsDone > batch {
+					t.Errorf("claimed %d jobs with a batch limit of %d", stats.JobsDone, batch)
+				}
+			}
+			var state string
+			if err := e.Migrator.QueryRow(ctx, `SELECT state FROM blobs WHERE app=$1 AND id=$2`, testenv.Other, quiet).Scan(&state); err != nil {
+				t.Fatal(err)
+			}
+			if state != "purged" {
+				t.Fatalf("quiet app still %s after enough slots for both ready apps", state)
+			}
+			var remaining int
+			if err := e.Migrator.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE app=$1 AND status='pending'`, testenv.App).Scan(&remaining); err != nil || remaining == 0 {
+				t.Fatal("backlog fixture exhausted", err)
+			}
+		})
+	}
 }
