@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/paulmalmquist/storage_relspace/internal/admin"
 	"github.com/paulmalmquist/storage_relspace/internal/markings"
 	"github.com/paulmalmquist/storage_relspace/internal/service"
 	"github.com/paulmalmquist/storage_relspace/internal/testenv"
@@ -48,6 +49,9 @@ func TestManagedAttachmentLifecycle(t *testing.T) {
 	for _, shred := range []bool{false, true} {
 		wantCode(t, e.C.Blobs.Delete(ctx, owner, blob.ID, shred), "conflict")
 	}
+	operator := &admin.Admin{Pool: e.Migrator, Actor: "admin-cli:test", Stripes: 4}
+	wantCode(t, operator.TransferOwner(ctx, testenv.App, "record", rec.ID, member.Principal.Subject), "conflict")
+	wantCode(t, operator.TransferOwner(ctx, testenv.App, "blob", blob.ID, member.Principal.Subject), "conflict")
 	empty := ""
 	detach := in(`{"tag":"detached"}`)
 	detach.AttachmentID = &empty
