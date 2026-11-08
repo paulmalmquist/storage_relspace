@@ -36,6 +36,7 @@ import (
 const (
 	quietApp = "loadq"
 	noisyApp = "loadn"
+	probeApp = "loadp"
 )
 
 func user(i int) string { return fmt.Sprintf("load-%03d@example.com", i) }
@@ -49,7 +50,13 @@ func main() {
 	step := flag.Duration("step", 10*time.Second, "duration of each sweep step")
 	out := flag.String("out", "", "write results JSON here")
 	setup := flag.Bool("setup", false, "provision principals and apps, then exit")
+	fairness := flag.Bool("fairness-only", false, "compare fixed-rate reads in two apps with and without a third app under overload")
+	probeBudget := flag.Duration("probe-deadline", 2*time.Second, "per-probe latency budget for the fairness check")
 	flag.Parse()
+	if *users < 1 || *users > 256 || *dur <= 0 || *probeBudget <= 0 {
+		fmt.Fprintln(os.Stderr, "invalid load parameters")
+		os.Exit(2)
+	}
 	ctx := context.Background()
 	if *setup {
 		if err := provision(ctx, *users); err != nil {
@@ -59,6 +66,13 @@ func main() {
 		return
 	}
 	r := &runner{url: *url, secret: *secret, users: *users}
+	if *fairness {
+		if err := r.fairness(ctx, *dur, *probeBudget, *out); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	res := Results{Label: "SYNTHETIC: one host, one API process, one PostgreSQL; not a production capacity estimate",
 		StartedAt: time.Now().UTC(), Host: fmt.Sprintf("%s/%s, %d CPUs", runtime.GOOS, runtime.GOARCH, runtime.NumCPU()),
 		Users: *users, Duration: dur.String()}
@@ -129,7 +143,7 @@ func provision(ctx context.Context, n int) error {
 		}
 	}
 	a := &admin.Admin{Pool: pool, Actor: "strongbox-load", Stripes: cfg.AuditStripes}
-	for _, app := range []string{quietApp, noisyApp} {
+	for _, app := range []string{quietApp, noisyApp, probeApp} {
 		scope := app + ":" + cfg.AppEnv
 		if err := a.CreateApp(ctx, scope, app, user(0)); err != nil && !strings.Contains(err.Error(), "exists") && !strings.Contains(err.Error(), "duplicate") {
 			return err
@@ -140,7 +154,7 @@ func provision(ctx context.Context, n int) error {
 			}
 		}
 	}
-	fmt.Printf("provisioned %d users in %s and %s (%s)\n", n+1, quietApp, noisyApp, cfg.AppEnv)
+	fmt.Printf("provisioned %d users in %s, %s and %s (%s)\n", n+1, quietApp, noisyApp, probeApp, cfg.AppEnv)
 	return nil
 }
 
