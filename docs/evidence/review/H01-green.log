@@ -1,0 +1,8 @@
+=== RUN   TestHistoryAuthorizedPerRevisionMarking
+--- PASS: TestHistoryAuthorizedPerRevisionMarking (0.32s)
+=== RUN   TestRecordMarkingRules
+--- PASS: TestRecordMarkingRules (0.38s)
+=== RUN   TestReviewOwnerCannotLowerRecordMarking
+--- PASS: TestReviewOwnerCannotLowerRecordMarking (0.35s)
+PASS
+ok  	github.com/paulmalmquist/storage_relspace/internal/service	2.119s

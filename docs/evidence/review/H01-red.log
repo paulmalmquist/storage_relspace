@@ -1,0 +1,6 @@
+=== RUN   TestReviewOwnerCannotLowerRecordMarking
+    review_marking_test.go:35: owner lowered CUI to UNCONTROLLED; uncleared reader got &{ID:rec_1fb8dde4819f19396b2b462b25d5e65e Collection:classified Marking:UNCONTROLLED Version:2 SchemaVersion:0xc00057cfc8 Data:map[secret:regulated content] Withheld:false WithheldReason: Owner:admin@rel.test Visibility:app TeamID: Deleted:false Replayed:false CreatedBy:admin@rel.test CreatedAt:2026-11-07 18:49:53.938718 -0500 EST UpdatedBy:admin@rel.test UpdatedAt:2026-11-07 18:49:53.962695 -0500 EST}, error <nil>
+--- FAIL: TestReviewOwnerCannotLowerRecordMarking (0.31s)
+FAIL
+FAIL	github.com/paulmalmquist/storage_relspace/internal/service	0.368s
+FAIL
