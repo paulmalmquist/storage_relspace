@@ -80,3 +80,35 @@ func TestReviewRestoreRefusesSameDatabaseAcrossSchemas(t *testing.T) {
 		t.Fatal("restore accepted the source database under a different schema")
 	}
 }
+
+func TestReviewPendingSessionRestoreKeepsAcknowledgedParts(t *testing.T) {
+	src, ctx := testenv.New(t), context.Background()
+	user := src.Ctx(t, "engineer@rel.test")
+	session, err := src.C.Blobs.CreateSession(ctx, user, service.BlobInput{Marking: markings.None(), DeclaredSize: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.C.Blobs.PutPart(ctx, user, session.ID, 1, bytes.NewReader([]byte("a"))); err != nil {
+		t.Fatal(err)
+	}
+	dir := reviewExport(t, src)
+	dst := testenv.Empty(t, src.Keyring)
+	if _, err := backup.Restore(ctx, dst.Migrator, dst.C.Backend, dir, false); err != nil {
+		t.Fatal(err)
+	}
+	user = dst.Ctx(t, "engineer@rel.test")
+	status, err := dst.C.Blobs.Session(ctx, user, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Received) != 1 || status.Received[0] != 1 {
+		t.Fatalf("acknowledged part disappeared: %+v", status)
+	}
+	if _, err := dst.C.Blobs.CompleteSession(ctx, user, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, body, err := dst.C.Blobs.ReadAll(ctx, user, session.ID)
+	if err != nil || !bytes.Equal(body, []byte("a")) {
+		t.Fatalf("restored session claimed an acknowledged part but its object was not exported: %v", err)
+	}
+}
