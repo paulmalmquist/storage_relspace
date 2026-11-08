@@ -1,0 +1,12 @@
+=== RUN   TestSaveResponseIsTheWrittenVersion
+--- PASS: TestSaveResponseIsTheWrittenVersion (2.53s)
+=== RUN   TestLostResponseRetries
+--- PASS: TestLostResponseRetries (0.35s)
+=== RUN   TestReplayAfterRevocation
+--- PASS: TestReplayAfterRevocation (0.30s)
+=== RUN   TestReviewRetryCannotReadDeletedRecord
+--- PASS: TestReviewRetryCannotReadDeletedRecord (0.31s)
+=== RUN   TestReviewOperationStatusRechecksResourceAccess
+--- PASS: TestReviewOperationStatusRechecksResourceAccess (0.32s)
+PASS
+ok  	github.com/paulmalmquist/storage_relspace/internal/service	4.886s

@@ -1,0 +1,9 @@
+=== RUN   TestReviewRetryCannotReadDeletedRecord
+    review_receipts_test.go:25: retry returned deleted content that history refuses: &{ID:rec_5679efcf70107294d0365c69b295af58 Collection:ncr Marking:CUI//SP-EXPT Version:2 SchemaVersion:<nil> Data:map[part_number:A status:closed] Withheld:false WithheldReason: Owner:admin@rel.test Visibility:app TeamID: Deleted:false Replayed:true CreatedBy:admin@rel.test CreatedAt:2026-11-07 18:51:27.633568 -0500 EST UpdatedBy:engineer@rel.test UpdatedAt:2026-11-07 18:51:27.658024 -0500 EST}
+--- FAIL: TestReviewRetryCannotReadDeletedRecord (0.34s)
+=== RUN   TestReviewOperationStatusRechecksResourceAccess
+    review_receipts_test.go:44: receipt exposes a now-private resource: &{OpID:review-update-0002 Type:record.update Status:succeeded ResourceType:record ResourceID:rec_9f7061c7699987d00e3975d6d0dbff71 ResourceVersion:2 Result:map[collection:ncr] CreatedAt:2026-11-07 18:51:28.07338 -0500 EST CompletedAt:2026-11-07 18:51:28.07338 -0500 EST}
+--- FAIL: TestReviewOperationStatusRechecksResourceAccess (0.40s)
+FAIL
+FAIL	github.com/paulmalmquist/storage_relspace/internal/service	0.811s
+FAIL
