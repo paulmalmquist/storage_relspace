@@ -9,4 +9,4 @@ infra
 **/*_test.go
 
 .strongbox-dreamcatcher
-dist
+/dist/dreamcatcher

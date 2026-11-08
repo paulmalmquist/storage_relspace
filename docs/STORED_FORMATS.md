@@ -19,6 +19,11 @@ to read, convert or verify anything.
 | Database schema created by Python (`schema_info` marker, no `schema_migrations`) | Retired Python implementation | **No. `strongbox init` refuses** with `ErrLegacyPythonSchema` | Prevents a half-applied migration against an incompatible layout. |
 | Database schema `0001_init.sql` (unscoped tables) | Go before app scoping | Yes, through `0002` | Existing rows are mapped to the `_legacy` scope, which no request context can select, until an operator assigns them (below). |
 
+Migration 0012 adds nullable `attachment_id` to records and revisions. A live record's
+foreign key binds the file to its app, owner and active state. Existing records acquire
+no link. Sealed export and restore preserve both columns. Only live links pin bytes.
+See the [attachment and retry contract](../examples/dreamcatcher/README.md#file-lifetime-and-retries).
+
 ## Decision on Python-era data
 
 The Python implementation existed for three commits (14f9a5f through 6d54d45) before the Go rewrite and

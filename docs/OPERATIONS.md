@@ -224,3 +224,12 @@ operation IDs for all app mutations and `If-Match` for record deletion; regenera
 Apply migration 11 before enabling record batches. It extends receipt history pins to batch
 outcomes. Rates count ordinary requests as one work unit and batches as one per command; the
 configured burst should accommodate the intended batch size. See [atomic saves](ATOMIC_RECORD_SAVES.md).
+
+### Managed files and worker fairness
+
+Migration 0012 adds the active-file foreign key and its indexes. Existing records start
+without a managed attachment. Schedule index creation and constraint validation with
+the size of the live records and blobs tables in mind. Migration 0013 adds the index
+used to claim ready work per app. A live link must be detached before independent owner
+transfer or file shred. [Application contract](../examples/dreamcatcher/README.md#file-lifetime-and-retries)
+and [worker evidence](evidence/dreamcatcher/README.md#resource-fairness).

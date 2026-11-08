@@ -1,0 +1,13 @@
+{
+  "bindings": {
+    "registered-readiness-app-id": {
+      "profile": "readiness-notes", "strongboxApp": "readiness", "submissionId": "approved-readiness-submission-id", "marking": "UNCONTROLLED"
+    },
+    "registered-supplier-app-id": {
+      "profile": "supplier-evidence", "strongboxApp": "supplier", "submissionId": "approved-supplier-submission-id", "marking": "UNCONTROLLED"
+    }
+  },
+  "subjects": {
+    "stable-dreamcatcher-user-id": "registered-strongbox-subject"
+  }
+}

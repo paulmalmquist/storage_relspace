@@ -90,3 +90,10 @@ does not re-encrypt old ciphertext, so a successful restore drill must include o
 The smallest useful next delivery is **complete encrypted backup plus reconciliation and a measured
 restore drill**. Then add bounded transactions and attachment references when a concrete Dreamcatcher
 app needs them. Keep arbitrary SQL, search engines and domain workflows outside this storage API.
+
+### Dreamcatcher follow-up
+
+The subsequent app exercise reproduced two outbox dispatch failures under PostgreSQL 16,
+including a worker claiming seven jobs with a batch limit of one. The focused
+[findings and before/after evidence](evidence/dreamcatcher/README.md#resource-fairness)
+cover the fixes, a three-app API load test and the workstation transfer kit.

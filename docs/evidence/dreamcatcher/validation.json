@@ -1,0 +1,43 @@
+{
+  "review_base": "2e4589d2038b12f6b57b8bb27883631706bc3586",
+  "reference_dreamcatcher": "50affa57ad3e4119bba5a5300f28fa136716351b",
+  "go": "1.26.10",
+  "postgres": "16.15",
+  "node": "22.18.0",
+  "chromium": "153.0.8010.0",
+  "integration_required": true,
+  "go_race": {
+    "enforced-fips": {
+      "top_level": 215,
+      "including_subtests": 226,
+      "failures": 0,
+      "skipped_tests": 0,
+      "packages_with_tests": 16
+    },
+    "frozen-v1.0.0": {
+      "top_level": 215,
+      "including_subtests": 226,
+      "failures": 0,
+      "skipped_tests": 0,
+      "packages_with_tests": 16
+    }
+  },
+  "typescript": {
+    "passed": 11,
+    "skipped": 0
+  },
+  "dreamcatcher": {
+    "passed": 10,
+    "skipped": 0
+  },
+  "source_intake": "two actual HTTP 201 submissions queued in a disposable reference registry",
+  "runtime": "release and query gates from the reference server; synthetic warehouse provider and local worker doubles",
+  "local_storage": "PostgreSQL, local encrypted objects, local wrapping keys",
+  "native_launch": "exercised",
+  "docker_compose_launch": "recipe supplied; Docker engine unavailable in test host",
+  "cloud_projects_accessed": 0,
+  "vet": "pass",
+  "staticcheck": "pass",
+  "docker_compose_config": "2.40.3 config --quiet passed",
+  "managed_owner_transfer": "record and blob transfer rejected while pinned; focused regression passes in both FIPS modes"
+}

@@ -1,0 +1,72 @@
+{
+  "scope": "synthetic / one API instance and PostgreSQL / no client retries",
+  "noisy_concurrency": 12,
+  "scheduled_reads_per_quiet_app_per_phase": 40,
+  "probe_deadline": "2s",
+  "baseline": [
+    {
+      "name": "loadq",
+      "mode": "open",
+      "offered_per_s": 5,
+      "ops": 40,
+      "ops_per_s": 5,
+      "p50_ms": 5.9,
+      "p95_ms": 74.3,
+      "p99_ms": 99.9,
+      "max_ms": 99.9,
+      "errors": null
+    },
+    {
+      "name": "loadp",
+      "mode": "open",
+      "offered_per_s": 5,
+      "ops": 40,
+      "ops_per_s": 5,
+      "p50_ms": 5.9,
+      "p95_ms": 77.5,
+      "p99_ms": 88.5,
+      "max_ms": 88.5,
+      "errors": null
+    }
+  ],
+  "under_load": [
+    {
+      "name": "loadq",
+      "mode": "open",
+      "offered_per_s": 5,
+      "ops": 40,
+      "ops_per_s": 5,
+      "p50_ms": 8,
+      "p95_ms": 26.4,
+      "p99_ms": 133.1,
+      "max_ms": 133.1,
+      "errors": null
+    },
+    {
+      "name": "loadp",
+      "mode": "open",
+      "offered_per_s": 5,
+      "ops": 40,
+      "ops_per_s": 5,
+      "p50_ms": 7.5,
+      "p95_ms": 33.3,
+      "p99_ms": 78.2,
+      "max_ms": 78.2,
+      "errors": null
+    }
+  ],
+  "noisy_app": {
+    "name": "loadn",
+    "mode": "closed",
+    "ops": 32153,
+    "ops_per_s": 4097.5,
+    "p50_ms": 2.3,
+    "p95_ms": 6.2,
+    "p99_ms": 9.2,
+    "max_ms": 107,
+    "errors": {
+      "429 rate_limited": 28379
+    }
+  },
+  "passed": true
+}

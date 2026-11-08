@@ -1,0 +1,71 @@
+TAP version 13
+# Subtest: the bridge checks the end user and sends workload credentials only to Strongbox
+ok 1 - the bridge checks the end user and sends workload credentials only to Strongbox
+  ---
+  duration_ms: 52.700799
+  type: 'test'
+  ...
+# Subtest: token exchange requests an audience-bound ID token, fails closed on a different type
+ok 2 - token exchange requests an audience-bound ID token, fails closed on a different type
+  ---
+  duration_ms: 4.268902
+  type: 'test'
+  ...
+# Subtest: uploaded applications with PostgreSQL, restricted Strongbox login, local keys and objects
+    # Subtest: bundle runs behind the edge and the query broker enforces per-user program access
+    ok 1 - bundle runs behind the edge and the query broker enforces per-user program access
+      ---
+      duration_ms: 50.332104
+      type: 'test'
+      ...
+    # Subtest: private save retries exactly once, stale edit preserves the winning version
+    ok 2 - private save retries exactly once, stale edit preserves the winning version
+      ---
+      duration_ms: 255.379225
+      type: 'test'
+      ...
+    # Subtest: shared evidence pins an encrypted file, survives retry, and is accessed only through its entitled row
+    ok 3 - shared evidence pins an encrypted file, survives retry, and is accessed only through its entitled row
+      ---
+      duration_ms: 517.921373
+      type: 'test'
+      ...
+    # Subtest: full service restart retains both saves and the exact evidence bytes
+    ok 4 - full service restart retains both saves and the exact evidence bytes
+      ---
+      duration_ms: 1031.91209
+      type: 'test'
+      ...
+    # Subtest: reference Dreamcatcher releases query entitled rows and persist through the exact submitted bundles
+    ok 5 - reference Dreamcatcher releases query entitled rows and persist through the exact submitted bundles
+      ---
+      duration_ms: 1428.780156
+      type: 'test'
+      ...
+    # Subtest: Chromium completes the upload, reload and download workflows
+    ok 6 - Chromium completes the upload, reload and download workflows
+      ---
+      duration_ms: 3630.906783
+      type: 'test'
+      ...
+    # Subtest: warehouse entitlement loss and release revocation apply to the next read, download and retry
+    ok 7 - warehouse entitlement loss and release revocation apply to the next read, download and retry
+      ---
+      duration_ms: 38.544335
+      type: 'test'
+      ...
+    1..7
+ok 3 - uploaded applications with PostgreSQL, restricted Strongbox login, local keys and objects
+  ---
+  duration_ms: 8097.088792
+  type: 'test'
+  ...
+1..3
+# tests 10
+# suites 0
+# pass 10
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 8200.914505

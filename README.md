@@ -8,6 +8,8 @@ module); every decision audited in per-app hash chains.
 Apps reach it over HTTP (`/v1/apps/{app}/…`), agents over MCP, and code through the Go and TypeScript
 clients. Apps never get database credentials or SQL access.
 
+[Run the Dreamcatcher workstation demo or download the two ready-to-upload apps.](examples/dreamcatcher/README.md)
+
 ```mermaid
 flowchart LR
   subgraph Callers

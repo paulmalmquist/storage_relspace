@@ -1,0 +1,10 @@
+--- FAIL: TestOutboxMakesProgressInEveryReadyApp (1.33s)
+    --- FAIL: TestOutboxMakesProgressInEveryReadyApp/batch1 (0.88s)
+        worker_test.go:124: quiet app still deleted after enough slots for both ready apps
+    --- FAIL: TestOutboxMakesProgressInEveryReadyApp/batch2 (0.45s)
+        worker_test.go:124: quiet app still deleted after enough slots for both ready apps
+--- FAIL: TestOutboxMakesProgressInEveryReadyApp (1.60s)
+    --- FAIL: TestOutboxMakesProgressInEveryReadyApp/batch1 (0.76s)
+        worker_test.go:116: claimed 7 jobs with a batch limit of 1
+    --- FAIL: TestOutboxMakesProgressInEveryReadyApp/batch2 (0.83s)
+        worker_test.go:116: claimed 7 jobs with a batch limit of 2
