@@ -1,0 +1,96 @@
+{
+  "label": "SYNTHETIC: one host, one API process, one PostgreSQL; not a production capacity estimate",
+  "started_at": "2026-11-08T00:58:11.473399987Z",
+  "host": "linux/amd64, 9 CPUs",
+  "users": 4,
+  "duration": "3s",
+  "workloads": [
+    {
+      "name": "private-state",
+      "mode": "closed",
+      "ops": 625,
+      "ops_per_s": 208.3,
+      "p50_ms": 15,
+      "p95_ms": 26.6,
+      "p99_ms": 128.9,
+      "max_ms": 294.9,
+      "errors": null,
+      "final_state": "ok: 4/4 records match their owners' successful updates"
+    },
+    {
+      "name": "shared-record",
+      "mode": "closed",
+      "ops": 684,
+      "ops_per_s": 227.9,
+      "p50_ms": 14.8,
+      "p95_ms": 22.8,
+      "p99_ms": 56,
+      "max_ms": 234.8,
+      "errors": null,
+      "conflict_retries": 513,
+      "final_state": "ok: counter 171 = successful increments, no lost update"
+    },
+    {
+      "name": "blobs",
+      "mode": "closed",
+      "ops": 449,
+      "ops_per_s": 149.6,
+      "p50_ms": 21.2,
+      "p95_ms": 32,
+      "p99_ms": 254.5,
+      "max_ms": 363.2,
+      "errors": null,
+      "final_state": "ok: 450/450 blobs read back intact"
+    },
+    {
+      "name": "quiet-alone",
+      "mode": "closed",
+      "ops": 2907,
+      "ops_per_s": 968.7,
+      "p50_ms": 3.3,
+      "p95_ms": 6.1,
+      "p99_ms": 14.4,
+      "max_ms": 93.5,
+      "errors": null
+    },
+    {
+      "name": "quiet-beside-noisy",
+      "mode": "closed",
+      "ops": 1290,
+      "ops_per_s": 644.8,
+      "p50_ms": 5,
+      "p95_ms": 9.1,
+      "p99_ms": 52.8,
+      "max_ms": 153.1,
+      "errors": null
+    }
+  ],
+  "open_loop_sweep": [
+    {
+      "name": "open-loop 5/s",
+      "mode": "open",
+      "offered_per_s": 5,
+      "ops": 10,
+      "ops_per_s": 5.5,
+      "p50_ms": 10.8,
+      "p95_ms": 136.5,
+      "p99_ms": 136.5,
+      "max_ms": 136.5,
+      "errors": null,
+      "final_state": "ok: 10 records = successful creates"
+    },
+    {
+      "name": "open-loop 15/s",
+      "mode": "open",
+      "offered_per_s": 15,
+      "ops": 31,
+      "ops_per_s": 15.4,
+      "p50_ms": 10.1,
+      "p95_ms": 45.5,
+      "p99_ms": 111,
+      "max_ms": 111,
+      "errors": null,
+      "final_state": "ok: 31 records = successful creates"
+    }
+  ]
+}

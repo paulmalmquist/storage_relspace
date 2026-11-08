@@ -66,7 +66,8 @@ migration identity does not have by default: run it as an operator identity gran
 | `STRONGBOX_DB_MAX_CONNS_PER_APP` | half the pool | Connections one app's transactions may hold at once, so a busy app queues behind its own share ([LOAD.md](evidence/LOAD.md) shows why). |
 | `STRONGBOX_DB_ACQUIRE_TIMEOUT_MS` | 3000 | A request that waits longer for a connection gets `503` with `Retry-After`, instead of queueing. |
 | `STRONGBOX_DB_STATEMENT_TIMEOUT_MS` | 15000 | Per statement (also `idle_in_transaction_session_timeout`). |
-| `STRONGBOX_REQUEST_TIMEOUT_MS` | 30000 | Non-streaming requests. Uploads, downloads and parts are bounded by Cloud Run's request timeout (300 s in Terraform). |
+| `STRONGBOX_REQUEST_TIMEOUT_MS` | 30000 | Authentication and ordinary requests, including global endpoints. |
+| `STRONGBOX_STREAM_TIMEOUT_MS` | 300000 | Upload/download/part requests, starting before authentication; transport read/write deadlines use the same bound. |
 | `STRONGBOX_KMS_TIMEOUT_MS` | 10000 | Each wrap/unwrap. |
 | Cloud Run `max_instance_request_concurrency` (`api_concurrency`) | 40 | Keep it a small multiple of the pool size. |
 | `STRONGBOX_RATE_SUBJECT_PER_SECOND` / `_BURST` | 50 / 100 | Per (app, subject), per instance. |
@@ -87,8 +88,10 @@ quotas in the database are the durable limit; the rate limits protect each insta
   single-upload maximum when the length is unknown); an upload session reserves its declared size.
   Reservations are released when the upload commits (replaced by the actual size) or aborts.
 - record count and record bytes (live records only; history is bounded separately by
-  `history_limit` and deleted-record expiry): counters are sharded eight ways, so concurrent writers
-  on other shards can exceed the limit by at most seven records.
+  `history_limit`, unexpired receipt pins and deleted-record expiry): counters remain sharded eight
+  ways. Positive changes reserve the quota row before updating a shard when record quotas are
+  configured. Batches use the same reservation; admission is exact under the service's READ COMMITTED
+  transactions. Unlimited apps skip the reservation lock.
 
 `strongbox usage -app APP -recount` compares the counters with a full scan; `-fix` rewrites them.
 
@@ -162,9 +165,10 @@ strongbox validate-export -in /secure/notes-2026-11-07   # offline: digests, row
 ```
 
 An export (format version 1, see `internal/backup`) holds one app's rows, read from one database
-snapshot, and its encrypted objects, with SHA-256 digests in `manifest.json`. This format is not
-ciphertext-only: unencrypted UNCONTROLLED records, revisions and plain equality tokens remain
-plaintext (review finding M10). Membership, schemas and audit metadata are also readable. Current
+snapshot, and its encrypted objects, with SHA-256 digests in `manifest.json`. Format 1 refuses
+exports containing plaintext record payloads or revisions before creating files. Use encrypted
+collections for recoverable application data; sealed export of plaintext collections needs a new
+format and is not implemented. Membership, schemas and audit metadata remain readable. Current
 ciphertexts bind the app; assigned legacy ciphertexts retain their older contexts. Protect the
 entire export according to its data classification.
 
@@ -176,14 +180,18 @@ strongbox restore -in /secure/notes-2026-11-07 -dry-run   # every row inserted a
 strongbox restore -in /secure/notes-2026-11-07 -deep      # restore, then decrypt everything and verify chains and usage
 ```
 
-Restore refuses a target that is the export's source database and schema, one that already has the
+Restore refuses the source cluster/database regardless of schema, one that already has the
 app, and one at an older schema than the export. It validates the export first and refuses a
 mismatch. Objects are copied before rows are committed; a copy failure rolls back the rows and can leave
 unreferenced objects in the target. Row scopes, canonical manifest paths and
 object prefixes are checked before writing. In a populated target, every source principal must
 already be provisioned by the target operator; existing policy is preserved. A genuinely empty
-target can recover the source principals. Offline validation still misses an active multipart
-blob whose part list has been removed; deep verification detects its missing stream (M11).
+target can recover the source principals. Export includes acknowledged parts of pending sessions.
+Offline validation checks part count, ordering, sizes, inventory and aggregate digests; deep
+verification uses the same part-list check as normal reads, authenticates the stream and checks
+its total size. Export/restore require permission to read `pg_control_system()` for stable cluster
+identity and fail closed if it is unavailable; this permission belongs to the recovery operator,
+not the API login.
 
 Restoring under a different app ID (a clone) is not supported: every ciphertext would have to be
 re-sealed under the new app's contexts, which is a separate operation from restore.
@@ -194,3 +202,18 @@ re-sealed under the new app's contexts, which is a separate operation from resto
 chain and the first bad sequence number. The worker delivers committed events to the structured log
 (`jsonPayload.audit=true`), which the Terraform sink routes to the audit log bucket. The bucket is
 initially unlocked (`locked = false`); retention becomes immutable only after the operator locks it.
+
+
+### Upgrade notes for review migrations 7–9
+
+Migration 7 constrains singleton receipt/index keys and pins unexpired receipt revisions. It
+retires duplicate receipt keys while preserving their wrapped bytes. Multiple active blind-index
+keys stop the upgrade: an operator must decrypt/rebuild tokens under one key before proceeding;
+SQL cannot repair encrypted indexes by retiring keys. Migration 8 adds narrow sharing commands
+and grant-update policies. Migration 9 serializes positive record quota reservations when quotas
+are configured. Apply these with `strongbox init` before running this build.
+
+Application `/usage` counts are caller-visible, labelled `scope: visible`; operator CLI usage is
+still app-wide. Detailed migration status requires app admin plus `apps:operate` and collection-wide
+classification clearance. Cancellation returns redacted counts/failures. Clients must send
+operation IDs for all app mutations and `If-Match` for record deletion; regenerate OpenAPI clients.

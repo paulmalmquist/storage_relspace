@@ -1,0 +1,53 @@
+{
+  "review_base": "2e35159be7fea478a68f103c9dfc05adeaed18bf",
+  "continued_from": "6d5edab1496841752dfef08c185a6e80e525e57a",
+  "versions": {
+    "go": "1.26.10",
+    "postgresql": "16.15",
+    "node": "22.18.0"
+  },
+  "integration_required": true,
+  "race_detector": true,
+  "runs": {
+    "enforced-fips": {
+      "test_results_including_subtests": 175,
+      "top_level_tests": 173,
+      "passed_packages": 13,
+      "packages_without_tests": 6,
+      "failed": 0,
+      "skipped_tests": 0
+    },
+    "frozen-v1.0.0": {
+      "test_results_including_subtests": 175,
+      "top_level_tests": 173,
+      "passed_packages": 13,
+      "packages_without_tests": 6,
+      "failed": 0,
+      "skipped_tests": 0
+    }
+  },
+  "typescript": {
+    "live_tests_passed": 9,
+    "skipped": 0,
+    "generated_types_match": true,
+    "typecheck": "pass",
+    "example": "pass"
+  },
+  "checks": {
+    "go_vet": "pass",
+    "staticcheck": "pass",
+    "govulncheck": "no affected callable symbols; one non-called required-module advisory",
+    "git_diff_check": "pass"
+  },
+  "load": {
+    "synthetic": true,
+    "users": 4,
+    "duration_per_closed_workload": "3s",
+    "open_loop_rates": [
+      5,
+      15
+    ],
+    "step": "2s",
+    "purpose": "smoke correctness, not a production capacity estimate"
+  }
+}

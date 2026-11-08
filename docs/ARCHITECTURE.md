@@ -116,9 +116,10 @@ cursors (bound to app and listing), data-key scopes, AAD and blind-index tokens 
 
 ### Transactions
 
-App resource operations use `store.DB.Run(ctx, scope, fn)`. Principal registry reads and the
-registry's provisioning helpers still use the pool directly; those reads do not inherit `Run`'s
-acquisition budget (review finding M08 in [the independent review](STRONGBOX_REVIEW_2e35159.md)).
+Runtime app and principal registry operations use `store.DB.Run(ctx, scope, fn)`. Authentication
+uses a bounded global scope and a reserved concurrency gate before app admission; registry reads
+inside an existing transaction reuse it. Offline migration/admin helpers retain their explicitly
+privileged pool/transaction paths.
 `Run` performs:
 
 1. `BEGIN`, then one parameterized `SELECT set_config('strongbox.app', $1, true), …` for the scope
@@ -172,15 +173,17 @@ leaves a `pending` row whose lease expires; the worker aborts it and queues the 
   caller may read, so an agent that is denied content cannot use filters as an oracle
   (`TestFiltersAreNotAnOracle`).
 - Encrypted collections use HMAC equality tokens. Unencrypted UNCONTROLLED collections use plain
-  equality tokens. `/usage` exposes app-wide counts and bytes to members, and migration status can
-  expose private record IDs; these are unresolved disclosure findings (M05).
+  equality tokens. `/usage` reports only resources currently visible under RLS and classification,
+  with `scope: visible`; limits remain app-wide. Detailed migration status requires the app admin
+  role, `apps:operate`, and clearance for every marking in the collection. This capability
+  intentionally exposes app-wide job counts and failing record IDs to operators.
 - Errors are sanitized: schema compile errors, for example, never include fetched content.
 
 ## Revocation
 
 New requests re-read principal policy, app membership, team membership, grants and visibility.
 Already-authorized streams may finish. This is a next-request guarantee, not a promise to cancel
-every statement already in flight. Upload-session status still omits a classification check (M06).
+every statement already in flight. Upload-session status and each receipt read recheck current classification.
 Specifically:
 
 | Situation after revocation | Result |
@@ -238,10 +241,11 @@ GCM IVs, which is why the format does not use a counter nonce. See
 
 ## Operations, receipts and retries
 
-The SDKs generate operation IDs and reuse them across transport retries. The API currently accepts
-mutations without an ID. Receipts cover record create/update/delete/restore, collection
-create/contract-change, blob creation, and upload-session create/complete; other mutations do not
-yet consistently use receipts (M01). The receipt key is `(app, subject, actor, op_id)`, so an
+The SDKs generate operation IDs and reuse them across transport retries. Every app mutation
+requires a valid `Idempotency-Key`; record update, deletion and restore require `If-Match`.
+Receipts cover records, collection changes/cancellation, blob creation/deletion, session
+creation/parts/completion/abort, sharing and team/member changes. Privileged global principal
+configuration and offline administrative commands are outside this per-app receipt protocol. The receipt key is `(app, subject, actor, op_id)`, so an
 agent acting for a user and the user acting directly never share a namespace.
 
 1. The receipt is claimed (`INSERT … ON CONFLICT DO NOTHING`, then `FOR UPDATE`) **before** version
@@ -252,9 +256,10 @@ agent acting for a user and the user acting directly never share a namespace.
    `409 idempotency_key_reused`.
 3. The receipt commits with the mutation. A concurrent attempt with the same ID gets
    `409 operation_in_progress` with `Retry-After`.
-4. A replay is re-authorized against current rights. It returns the original version while that
-   revision is retained; the current implementation silently falls back to the current version
-   after history pruning. Concurrent first-use receipt-key creation can also break replay (M04).
+4. A replay is re-authorized against current rights. Unexpired record receipts pin their result revisions during ordinary history trimming. A result
+   that is unavailable returns `410 result_expired`, rather than a different version; removed or
+   inaccessible resources return `404`. Existing fingerprints use their stored key ID, including
+   after retirement. Singleton receipt/index key creation is serialized and constrained in SQL.
 5. `GET /v1/apps/{app}/operations/{op_id}` reports `pending`, `succeeded` (with resource and
    version) or `not_found`. Receipts expire after seven days.
 
@@ -265,7 +270,8 @@ that version). `GET …/records/{id}/history` lists versions; `POST …/records/
 version writes a **new** version whose content is the old one, through the same compare-and-swap,
 so undo never rewrites history. The restored marking is `Combine(current, old)`, so undo cannot
 lower a classification. Deleted records keep no content in the live row; their revisions remain
-until history expiry (`collections.history_limit`, default 100) or a purge.
+until history expiry (`collections.history_limit`, default 100), subject to unexpired receipt pins,
+or a purge.
 
 ## Collection contracts
 
@@ -279,8 +285,9 @@ apply declared defaults (a new version, op `migrate`, in history), validate, bac
 uniqueness tokens. The collection switches only if every live record passes; otherwise the job fails
 with record IDs and reasons. Writers hold the collection's contract lock shared and staging and
 switching hold it exclusively, so request writes after a change is staged satisfy both contracts.
-The checker currently misclassifies `const: null` and some changes involving `patternProperties`;
-its implication proof is not sound for those cases (M03).
+The checker normalizes JSON inputs, distinguishes an absent `const` from `const: null`, and
+stages changed objects containing validation keywords it cannot analyze (including unchanged
+`patternProperties` that may interact with the change). Changed schema dialects also stage.
 
 Unique fields are enforced on blind-index tokens. A unique violation is visible to any writer
 regardless of RLS (that is what uniqueness means), so the error never names the record holding the
@@ -325,7 +332,7 @@ horizon. Realtime delivery, webhooks and CRDT merging are out of scope.
 | Ciphertext fails authentication | `integrity_violation`, audited as `error`; the first segment is checked before the response starts |
 | Upload interrupted or crashed | Row stays `pending` until its lease expires; the worker aborts it and deletes the object |
 | Stale write | `412 precondition_failed` (If-Match / expected version) |
-| Retry after a lost response | Receipted operations recheck access; original-version replay depends on history retention and stable receipt keys (M04) |
+| Retry after a lost response | Access is rechecked; unexpired results survive ordinary trimming; unavailable results are never replaced by newer versions |
 | Commit outcome unknown | `503`, `ErrCommitUnknown`; the client checks the operation ID |
 | Statement timeout or pool exhaustion | `503 unavailable` with `Retry-After` |
 | KMS unavailable | Requests needing an uncached unwrap fail with `503`; cached keys keep serving until their TTL |

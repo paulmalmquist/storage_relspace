@@ -64,3 +64,8 @@ backup retention for the instance or a separate collection (and instance) with i
 | `blob_noncurrent_retention_days` | Terraform | 30 days |
 | Bucket soft delete | Terraform (`soft_delete_policy`) | 7 days |
 | Audit log bucket | Terraform (`google_logging_project_bucket_config.audit`) | 2555 days, lock after confirming |
+
+Unexpired operation receipts pin the record revisions needed for replay during ordinary history
+trimming (seven-day receipt lifetime). This can temporarily exceed `history_limit`. Explicit
+purge and deleted-record expiry still remove data; a receipt cannot resurrect purged content or
+bypass current access checks. Old receipt keys must remain decryptable until their receipts expire.

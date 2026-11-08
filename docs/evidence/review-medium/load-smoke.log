@@ -1,0 +1,15 @@
+NOTICE:  database "strongbox_contract" does not exist, skipping
+created local keyring /tmp/tmp.pBpEcXcwBB/keyring.json (development only)
+schema ready
+principal alice@example.com saved
+principal bob@example.com saved
+principal carol@example.com saved
+provisioned 5 users in loadq and loadn (dev)
+private-state          closed ops=625      208.3/s  p50=  15.0ms p95=  26.6ms p99= 128.9ms max=  294.9ms final-state=ok: 4/4 records match their owners' successful updates
+shared-record          closed ops=684      227.9/s  p50=  14.8ms p95=  22.8ms p99=  56.0ms max=  234.8ms conflict-retries=513 final-state=ok: counter 171 = successful increments, no lost update
+blobs                  closed ops=449      149.6/s  p50=  21.2ms p95=  32.0ms p99= 254.5ms max=  363.2ms final-state=ok: 450/450 blobs read back intact
+quiet-alone            closed ops=2907     968.7/s  p50=   3.3ms p95=   6.1ms p99=  14.4ms max=   93.5ms
+  (noisy app alongside: closed ops=1038     346.0/s  p50=  30.7ms p95=  53.5ms p99= 188.0ms max=  272.3ms)
+quiet-beside-noisy     closed ops=1290     644.8/s  p50=   5.0ms p95=   9.1ms p99=  52.8ms max=  153.1ms
+open-loop 5/s          open   ops=10         5.5/s  p50=  10.8ms p95= 136.5ms p99= 136.5ms max=  136.5ms offered=5/s final-state=ok: 10 records = successful creates
+open-loop 15/s         open   ops=31        15.4/s  p50=  10.1ms p95=  45.5ms p99= 111.0ms max=  111.0ms offered=15/s final-state=ok: 31 records = successful creates

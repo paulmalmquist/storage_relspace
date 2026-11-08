@@ -3,7 +3,11 @@
 Reviewed base: `2e35159be7fea478a68f103c9dfc05adeaed18bf`, `paulmalmquist/storage_relspace`.
 Review branch: `review/strongbox-2e35159`. Review began November 7, 2026, America/New_York.
 
-**The eight guarantees do not all hold. Six High findings are fixed on this branch; twelve Medium findings remain open, with executable failing tests.** The original integration suite passed before these tests were added. Passing that suite was not evidence that the stated guarantees held.
+**Initial review: six High findings were fixed; twelve Medium findings were left open with failing tests.**
+
+**Follow-up:** the Medium reproductions are now default regression tests. See
+[STRONGBOX_MEDIUM_FOLLOWUP.md](STRONGBOX_MEDIUM_FOLLOWUP.md) for current fixes, validation, upgrade
+requirements and product gaps. The tables below preserve the original base-commit findings. The original integration suite passed before these tests were added. Passing that suite was not evidence that the stated guarantees held.
 
 Findings below come from code execution against PostgreSQL 16 using the restricted runtime login, or from cryptographic/schema checks. Documentation was checked against that behavior. All data was synthetic. No cloud project or deployment was accessed.
 
