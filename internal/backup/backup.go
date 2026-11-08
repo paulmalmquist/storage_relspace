@@ -602,6 +602,33 @@ func Restore(ctx context.Context, pool *pgxpool.Pool, backend store.Backend, dir
 		if exists {
 			return fmt.Errorf("the target already has app %s; restore only into a database without it", m.App)
 		}
+		// The registry is global security policy. An app backup must not introduce
+		// new clearances or platform administrators into a populated installation.
+		// A genuinely empty recovery target may recover its original registry.
+		var populated bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM principals)
+			OR EXISTS (SELECT 1 FROM apps WHERE app <> '_legacy')`).Scan(&populated); err != nil {
+			return err
+		}
+		if populated {
+			if err := eachLine(filepath.Join(dir, "tables/principals.ndjson"), func(raw []byte) error {
+				row, err := decodeRow(raw)
+				if err != nil {
+					return err
+				}
+				var exists bool
+				if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM principals WHERE subject=$1)`,
+					stringColumn(row, "subject")).Scan(&exists); err != nil {
+					return err
+				}
+				if !exists {
+					return errors.New("shared target requires every source principal to be pre-provisioned by its operator")
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
 		byName := map[string]TableEntry{}
 		for _, t := range m.Tables {
 			byName[t.Name] = t

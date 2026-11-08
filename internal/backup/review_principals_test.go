@@ -29,3 +29,26 @@ func TestReviewSharedRestoreCannotImportPlatformAdministrator(t *testing.T) {
 		t.Fatal("restoring one app imported a platform administrator able to disable another app's operator")
 	}
 }
+
+func TestReviewSharedRestorePreservesTargetPrincipalPolicy(t *testing.T) {
+	src, ctx := testenv.New(t), context.Background()
+	dir := reviewExport(t, src)
+	dst := testenv.Empty(t, src.Keyring)
+	for _, spec := range testenv.Principals {
+		spec.Scopes = []string{"records:read"}
+		if err := dst.C.Principals.Put(ctx, spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dst.Admin(t, `INSERT INTO apps(app,created_by) VALUES($1,'existing-operator')`, testenv.Other)
+	if _, err := backup.Restore(ctx, dst.Migrator, dst.C.Backend, dir, false); err != nil {
+		t.Fatal(err)
+	}
+	p, err := dst.C.Principals.Get(ctx, "admin@rel.test")
+	if err != nil || p == nil {
+		t.Fatalf("target identity lost: %v", err)
+	}
+	if p.HasScope("principals:admin") || !p.HasScope("records:read") {
+		t.Fatalf("source overwrote target security policy: %+v", p)
+	}
+}
