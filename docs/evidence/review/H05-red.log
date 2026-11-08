@@ -1,0 +1,7 @@
+=== RUN   TestReviewWorkerRejectsCrossAppObjectDelete
+2026/11/07 18:59:45 INFO audit audit=true chain=app:rival:test:1 app=0xc0000937d0 seq=1 ts=2026-11-07T23:59:45.441976Z actor=admin@rel.test on_behalf_of=<nil> action=blob.create resource_type=blob resource_id=0xc0000937f0 marking=0xc000093800 decision=allow reason="blob stored" request_id=0xc0000937e0 hash=41df56ddbeb233220c356d39f74abc12c5ad5389dfb22936ccd107fa2e1b6b72
+    review_worker_scope_test.go:39: app A's outbox deleted app B's ciphertext: not_found: object missing from blob store, body ""
+--- FAIL: TestReviewWorkerRejectsCrossAppObjectDelete (0.33s)
+FAIL
+FAIL	github.com/paulmalmquist/storage_relspace/internal/service	0.386s
+FAIL

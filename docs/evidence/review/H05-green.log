@@ -1,0 +1,25 @@
+=== RUN   TestBlobRoundTrip
+--- PASS: TestBlobRoundTrip (0.55s)
+=== RUN   TestUploadValidation
+--- PASS: TestUploadValidation (0.25s)
+=== RUN   TestUploadSweepAndCommitRace
+2026/11/07 19:00:23 INFO audit audit=true chain=app:acme:test:1 app=0xc0005b3470 seq=1 ts=2026-11-08T00:00:23.343372Z actor=system:worker on_behalf_of=<nil> action=blob.create resource_type=blob resource_id=0xc0005b3480 marking=<nil> decision=error reason="upload lease expired; aborted by sweeper" request_id=<nil> hash=7615b5b3310205f7b5ee858cb566b646598f27387284ec01fea8da8f7f943927
+--- PASS: TestUploadSweepAndCommitRace (0.40s)
+=== RUN   TestUploadSessionRoundTrip
+2026/11/07 19:00:23 INFO audit audit=true chain=app:acme:test:0 app=0xc0000928f0 seq=1 ts=2026-11-08T00:00:23.655884Z actor=engineer@rel.test on_behalf_of=<nil> action=blob.create resource_type=blob resource_id=0xc000092910 marking=0xc000092920 decision=allow reason="upload session started" request_id=0xc000092900 hash=bd2ccd1f5ef6b4120d609b8458430c87bbd4ba6c50a98d29bd7a9c4bbd06629c
+2026/11/07 19:00:23 INFO audit audit=true chain=app:acme:test:0 app=0xc000092960 seq=2 ts=2026-11-08T00:00:23.803737Z actor=engineer@rel.test on_behalf_of=<nil> action=blob.create resource_type=blob resource_id=0xc000092980 marking=0xc000092990 decision=allow reason="blob stored" request_id=0xc000092970 hash=adcb15efb96616843089337d0d077e6fa5023c4eaf93060ce7a4f9b61e97b48d
+2026/11/07 19:00:23 INFO audit audit=true chain=app:acme:test:0 app=0xc0000929d0 seq=3 ts=2026-11-08T00:00:23.808493Z actor=engineer@rel.test on_behalf_of=<nil> action=blob.read_content resource_type=blob resource_id=0xc0000929f0 marking=0xc000092a00 decision=allow reason="scope blobs:read; authorized for CUI//SP-EXPT//NOFORN" request_id=0xc0000929e0 hash=be77578b0b37b1e1b621aaf403c58c56d35f3fe5eaa568fc6c0d1290056532a0
+2026/11/07 19:00:23 INFO audit audit=true chain=app:acme:test:0 app=0xc000093ef0 seq=4 ts=2026-11-08T00:00:23.866749Z actor=engineer@rel.test on_behalf_of=<nil> action=blob.read_content resource_type=blob resource_id=0xc000134450 marking=0xc0001345a0 decision=allow reason="scope blobs:read; authorized for CUI//SP-EXPT//NOFORN" request_id=0xc000134440 hash=4d92e80dbfa6e9508d245fd3f6662bbe4f5bb7ffba8532ac92251e8da5229047
+2026/11/07 19:00:23 INFO audit audit=true chain=app:acme:test:0 app=0xc0001345f0 seq=5 ts=2026-11-08T00:00:23.874038Z actor=engineer@rel.test on_behalf_of=<nil> action=blob.read_content resource_type=blob resource_id=0xc000134680 marking=0xc000134750 decision=error reason="integrity failure: integrity_violation: ciphertext failed authentication (tampered, truncated, reordered, or wrong context)" request_id=0xc000134600 hash=6c2dbb7719b692159db673242a2af615d48ba4d16e500e5b63e5bc1c4f77aa8c
+2026/11/07 19:00:23 INFO audit audit=true chain=app:acme:test:0 app=0xc000134760 seq=6 ts=2026-11-08T00:00:23.887046Z actor=engineer@rel.test on_behalf_of=<nil> action=blob.delete resource_type=blob resource_id=0xc0001347c0 marking=0xc0001347f0 decision=allow reason="blob deleted; object deletion queued" request_id=0xc000134790 hash=75925c6a5c491b0706c95d26d43e7e1e26e5d78ffc054e45441ad7fb6f18897c
+--- PASS: TestUploadSessionRoundTrip (0.52s)
+=== RUN   TestBlobQuotaIsExactUnderConcurrency
+--- PASS: TestBlobQuotaIsExactUnderConcurrency (0.36s)
+=== RUN   TestReviewWorkerRejectsCrossAppObjectDelete
+2026/11/07 19:00:24 INFO audit audit=true chain=app:rival:test:3 app=0xc0005144e0 seq=1 ts=2026-11-08T00:00:24.681562Z actor=admin@rel.test on_behalf_of=<nil> action=blob.create resource_type=blob resource_id=0xc000514510 marking=0xc000514520 decision=allow reason="blob stored" request_id=0xc000514500 hash=bad6f0717260e24dff8fcb53f01eb2a505a143314a568dd0d9df5bee7efedd06
+--- PASS: TestReviewWorkerRejectsCrossAppObjectDelete (0.45s)
+=== RUN   TestWorkerIsPinnedPerApp
+2026/11/07 19:00:25 INFO audit audit=true chain=app:rival:test:1 app=0xc000405920 seq=1 ts=2026-11-08T00:00:25.032955Z actor=system:worker on_behalf_of=<nil> action=blob.create resource_type=blob resource_id=0xc000405930 marking=<nil> decision=error reason="upload lease expired; aborted by sweeper" request_id=<nil> hash=d5674863d8f867aee4dea8d918583bac315db5924e482978ccf9dd3e0945080b
+--- PASS: TestWorkerIsPinnedPerApp (0.31s)
+PASS
+ok  	github.com/paulmalmquist/storage_relspace/internal/service	3.927s
