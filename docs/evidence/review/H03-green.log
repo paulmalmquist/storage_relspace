@@ -1,0 +1,12 @@
+=== RUN   TestExportValidateRestore
+--- PASS: TestExportValidateRestore (1.38s)
+=== RUN   TestValidateDetectsTampering
+--- PASS: TestValidateDetectsTampering (0.56s)
+=== RUN   TestReviewRestoreRejectsForeignAppRows
+--- PASS: TestReviewRestoreRejectsForeignAppRows (0.49s)
+=== RUN   TestReviewRefusedRestoreDoesNotWriteObjects
+--- PASS: TestReviewRefusedRestoreDoesNotWriteObjects (0.57s)
+=== RUN   TestReviewValidateRejectsForeignObjectKey
+--- PASS: TestReviewValidateRejectsForeignObjectKey (0.33s)
+PASS
+ok  	github.com/paulmalmquist/storage_relspace/internal/backup	4.398s

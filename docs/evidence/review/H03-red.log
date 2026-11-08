@@ -1,0 +1,12 @@
+=== RUN   TestReviewRestoreRejectsForeignAppRows
+    review_restore_test.go:88: foreign-app row accepted; injected 1 administrator(s) into an existing app
+--- FAIL: TestReviewRestoreRejectsForeignAppRows (0.63s)
+=== RUN   TestReviewRefusedRestoreDoesNotWriteObjects
+    review_restore_test.go:121: refused restore opened 1 object writers before checking target app
+--- FAIL: TestReviewRefusedRestoreDoesNotWriteObjects (0.80s)
+=== RUN   TestReviewValidateRejectsForeignObjectKey
+    review_validate_test.go:25: validator accepted another app's object prefix
+--- FAIL: TestReviewValidateRejectsForeignObjectKey (0.29s)
+FAIL
+FAIL	github.com/paulmalmquist/storage_relspace/internal/backup	1.805s
+FAIL
