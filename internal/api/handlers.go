@@ -455,14 +455,15 @@ type collectionIn struct {
 }
 
 type recordIn struct {
-	Data       map[string]any `json:"data"`
-	Marking    *string        `json:"marking"`
-	Visibility string         `json:"visibility"`
-	TeamID     string         `json:"team_id"`
+	AttachmentID *string        `json:"attachment_id"`
+	Data         map[string]any `json:"data"`
+	Marking      *string        `json:"marking"`
+	Visibility   string         `json:"visibility"`
+	TeamID       string         `json:"team_id"`
 }
 
 func (in recordIn) input() (service.RecordInput, error) {
-	out := service.RecordInput{Data: in.Data, Visibility: in.Visibility, TeamID: in.TeamID}
+	out := service.RecordInput{AttachmentID: in.AttachmentID, Data: in.Data, Visibility: in.Visibility, TeamID: in.TeamID}
 	if in.Marking != nil {
 		m, err := parseMarking(*in.Marking)
 		if err != nil {

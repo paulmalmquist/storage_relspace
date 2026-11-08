@@ -150,6 +150,9 @@ func (k *Core) settle(ctx context.Context, err error) error {
 		case "23505":
 			return errs.Conflict("conflicts with an existing resource")
 		case "23503":
+			if attachmentConstraint(err) {
+				return errs.NotFound("attachment not found")
+			}
 			return errs.Invalid("refers to something that does not exist in this app")
 		case "23514":
 			return errs.Invalid("violates a storage rule")

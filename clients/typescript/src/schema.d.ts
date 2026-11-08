@@ -1142,6 +1142,8 @@ export interface components {
             /** @enum {string} */
             visibility?: "private" | "team" | "app";
             team_id?: string;
+            /** @description Managed blob reference. Omit to preserve on update, or use an empty string to detach. */
+            attachment_id?: string;
         };
         RecordOut: {
             id: string;
@@ -1166,6 +1168,8 @@ export interface components {
             updated_by?: string;
             /** Format: date-time */
             updated_at?: string;
+            /** @description Present only when the caller can read the active attachment. */
+            attachment_id?: string;
         };
         QueryIn: {
             filters?: {

@@ -94,3 +94,15 @@ test("atomic batches retain one outcome and roll back every conflicting write", 
   assert.equal((await alice.getRecord(name,one.id)).version,2);
   assert.equal((await alice.operation(operationId)).status,"succeeded");
 });
+
+test("managed evidence respects both ACLs, pins the blob and detaches with CAS", { skip }, async () => {
+  const alice = as("ALICE"), bob = as("BOB"), name = coll + "_files";
+  await alice.createCollection({ name, marking: "UNCONTROLLED", encrypted: true });
+  const blob = await alice.putBlob(new Uint8Array([7, 9]));
+  const record = await alice.createRecord(name, { data: { state: "open" }, visibility: "app", attachment_id: blob.id });
+  assert.equal(record.attachment_id, blob.id);
+  assert.equal((await bob.getRecord(name, record.id)).attachment_id, undefined);
+  await assert.rejects(alice.deleteBlob(blob.id, { shred: true }), (e: unknown) => e instanceof StrongboxError && e.status === 409);
+  await alice.updateRecord(name, record.id, record.version, { data: { state: "closed" }, attachment_id: "" });
+  await alice.deleteBlob(blob.id);
+});

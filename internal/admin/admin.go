@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/paulmalmquist/storage_relspace/internal/audit"
@@ -134,6 +135,10 @@ func (a *Admin) TransferOwner(ctx context.Context, app, kind, id, newOwner strin
 			RETURNING (SELECT owner FROM `+table+` WHERE app = $1 AND id = $2)`, app, id, newOwner).Scan(&old); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return errs.NotFound("%s not found", kind)
+			}
+			var pg *pgconn.PgError
+			if errors.As(err, &pg) && pg.Code == "23503" && pg.ConstraintName == "active_record_attachment" {
+				return errs.Conflict("detach the live attachment before changing its owner")
 			}
 			return err
 		}

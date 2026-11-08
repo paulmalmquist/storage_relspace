@@ -38,8 +38,8 @@ type Revision struct {
 // revision copies the version just written (rr) into history.
 func (r *Records) revision(ctx context.Context, tx pgx.Tx, c Ctx, col *Collection, rr *recordRow, op string, size int) error {
 	_, err := tx.Exec(ctx, `INSERT INTO record_revisions (app, record_id, version, collection, marking, op, data_plain,
-		data_sealed, key_id, aad_version, size_bytes, subject, actor)
-		SELECT app, id, version, collection, marking, $4, data_plain, data_sealed, key_id, aad_version, $5, $6, $7
+		data_sealed, key_id, aad_version, size_bytes, subject, actor, attachment_id)
+		SELECT app, id, version, collection, marking, $4, data_plain, data_sealed, key_id, aad_version, $5, $6, $7, attachment_id
 		FROM records WHERE app = $1 AND id = $2 AND version = $3`,
 		col.App, rr.id, rr.version, op, size, c.Principal.Subject, c.Actor())
 	if err != nil {
@@ -159,9 +159,10 @@ func (r *Records) revisionRecord(ctx context.Context, tx pgx.Tx, c Ctx, col *Col
 	var aadVersion int
 	var created time.Time
 	var subject string
-	err := tx.QueryRow(ctx, `SELECT marking, op, data_plain, data_sealed, key_id, aad_version, created_at, subject
+	var attachment *string
+	err := tx.QueryRow(ctx, `SELECT marking, op, data_plain, data_sealed, key_id, aad_version, created_at, subject, attachment_id
 		FROM record_revisions WHERE app = $1 AND record_id = $2 AND version = $3`, col.App, rr.id, version).
-		Scan(&banner, &op, &plain, &sealed, &keyID, &aadVersion, &created, &subject)
+		Scan(&banner, &op, &plain, &sealed, &keyID, &aadVersion, &created, &subject, &attachment)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errs.NotFound("version %d is not in this record's history", version)
 	}
@@ -189,6 +190,9 @@ func (r *Records) revisionRecord(ctx context.Context, tx pgx.Tx, c Ctx, col *Col
 		return rec, nil
 	}
 	rec.Data, err = r.open(ctx, tx, col, rr.id, m, version, aadVersion, plain, sealed, keyID)
+	if err == nil {
+		rec.AttachmentID, err = r.visibleAttachment(ctx, tx, c, attachment)
+	}
 	return rec, err
 }
 
@@ -240,9 +244,10 @@ func (r *Records) restoreTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, co
 		var plain, sealed []byte
 		var keyID *string
 		var aadVersion int
-		err = tx.QueryRow(ctx, `SELECT marking, op, data_plain, data_sealed, key_id, aad_version FROM record_revisions
+		var attachment *string
+		err = tx.QueryRow(ctx, `SELECT marking, op, data_plain, data_sealed, key_id, aad_version, attachment_id FROM record_revisions
 			WHERE app = $1 AND record_id = $2 AND version = $3`, c.App, id, version).
-			Scan(&banner, &op, &plain, &sealed, &keyID, &aadVersion)
+			Scan(&banner, &op, &plain, &sealed, &keyID, &aadVersion, &attachment)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errs.NotFound("version %d is not in this record's history", version)
 		}
@@ -272,6 +277,16 @@ func (r *Records) restoreTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, co
 		if err := r.validate(col, data); err != nil {
 			return errs.Invalid("version %d no longer satisfies the collection schema: %s", version, err.Error())
 		}
+		if !sameAttachment(rr.attachmentID, attachment) {
+			request := attachment
+			if request == nil {
+				empty := ""
+				request = &empty
+			}
+			if _, err = r.attachmentForWrite(ctx, tx, c, rr.owner, rr.attachmentID, request, m); err != nil {
+				return err
+			}
+		}
 		next := expectedVersion + 1
 		st, err := r.seal(ctx, tx, col, id, data, m, next)
 		if err != nil {
@@ -282,9 +297,9 @@ func (r *Records) restoreTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, co
 			return err
 		}
 		nr, err := scanRecord(tx.QueryRow(ctx, `UPDATE records SET marking=$5, data_plain=$6, data_sealed=$7, key_id=$8,
-			version=$9, aad_version=2, updated_by=$10, updated_at=now(), deleted_at=NULL, schema_version=$11
+			version=$9, aad_version=2, updated_by=$10, updated_at=now(), deleted_at=NULL, schema_version=$11, attachment_id=$12
 			WHERE app=$1 AND collection=$2 AND id=$3 AND version=$4 RETURNING `+recordCols,
-			c.App, col.Name, id, expectedVersion, m.Banner(), st.plain, st.sealed, st.keyID, next, c.Principal.Subject, col.Version))
+			c.App, col.Name, id, expectedVersion, m.Banner(), st.plain, st.sealed, st.keyID, next, c.Principal.Subject, col.Version, attachment))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errs.PreconditionFailed("record changed concurrently")
 		}

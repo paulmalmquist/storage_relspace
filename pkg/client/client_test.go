@@ -359,3 +359,27 @@ func TestAtomicBatchThroughSDK(t *testing.T) {
 		t.Fatalf("partial batch through SDK: %+v %v", fresh, err)
 	}
 }
+
+func TestManagedFileThroughSDK(t *testing.T) {
+	h, ctx := newHarness(t), context.Background()
+	adm, eng := h.app(t, "admin@rel.test"), h.app(t, "engineer@rel.test")
+	if _, err := adm.CreateCollection(ctx, client.CollectionSpec{Name: "findings", Marking: "UNCONTROLLED"}); err != nil {
+		t.Fatal(err)
+	}
+	file, err := eng.PutBlob(ctx, []byte("evidence"), client.BlobOptions{Marking: "UNCONTROLLED"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := eng.CreateRecord(ctx, "findings", client.RecordInput{Data: map[string]any{"state": "open"}, AttachmentID: &file.ID})
+	if err != nil || row.AttachmentID == nil || *row.AttachmentID != file.ID {
+		t.Fatal(row, err)
+	}
+	empty := ""
+	row, err = eng.UpdateRecord(ctx, "findings", row.ID, row.Version, client.RecordInput{Data: map[string]any{"state": "closed"}, AttachmentID: &empty})
+	if err != nil || row.AttachmentID != nil {
+		t.Fatal(row, err)
+	}
+	if err := eng.DeleteBlob(ctx, file.ID, true); err != nil {
+		t.Fatal(err)
+	}
+}

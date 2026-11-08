@@ -115,6 +115,7 @@ func union(a, b []string) []string {
 }
 
 type Record struct {
+	AttachmentID   *string
 	ID             string
 	Collection     string
 	Marking        markings.Marking
@@ -144,6 +145,9 @@ func (r *Record) JSON() map[string]any {
 		"content_withheld": r.Withheld, "owner": r.Owner, "visibility": r.Visibility, "team_id": optional(r.TeamID),
 		"deleted": r.Deleted, "schema_version": r.SchemaVersion, "created_by": r.CreatedBy, "created_at": r.CreatedAt.UTC().Format(time.RFC3339Nano),
 		"updated_by": r.UpdatedBy, "updated_at": r.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if r.AttachmentID != nil && !r.Withheld && !r.Deleted {
+		out["attachment_id"] = *r.AttachmentID
 	}
 	if r.WithheldReason != "" {
 		out["withheld_reason"] = r.WithheldReason
@@ -181,10 +185,11 @@ type CollectionInput struct {
 // RecordInput is a create or update. Visibility and TeamID apply to create only; use Share to
 // change them later.
 type RecordInput struct {
-	Data       map[string]any
-	Marking    *markings.Marking
-	Visibility string // private (default) | team | app
-	TeamID     string
+	AttachmentID *string // nil preserves the link on update; empty detaches it
+	Data         map[string]any
+	Marking      *markings.Marking
+	Visibility   string // private (default) | team | app
+	TeamID       string
 }
 
 // ---- schema handling ----------------------------------------------------------------------------
@@ -663,6 +668,7 @@ func (r *Records) seal(ctx context.Context, tx pgx.Tx, col *Collection, id strin
 }
 
 type recordRow struct {
+	attachmentID                                                     *string
 	id, collection, marking, createdBy, updatedBy, owner, visibility string
 	teamID                                                           *string
 	plain, sealed                                                    []byte
@@ -674,13 +680,13 @@ type recordRow struct {
 }
 
 const recordCols = `id, collection, marking, data_plain, data_sealed, key_id, version, aad_version, owner, visibility, team_id,
-	created_by, created_at, updated_by, updated_at, deleted_at, schema_version`
+	created_by, created_at, updated_by, updated_at, deleted_at, schema_version, attachment_id`
 
 func scanRecord(row pgx.Row) (*recordRow, error) {
 	var rr recordRow
 	err := row.Scan(&rr.id, &rr.collection, &rr.marking, &rr.plain, &rr.sealed, &rr.keyID, &rr.version, &rr.aadVersion,
 		&rr.owner, &rr.visibility, &rr.teamID, &rr.createdBy, &rr.createdAt, &rr.updatedBy, &rr.updatedAt, &rr.deletedAt,
-		&rr.schemaVersion)
+		&rr.schemaVersion, &rr.attachmentID)
 	return &rr, err
 }
 
@@ -720,6 +726,14 @@ func (r *Records) open(ctx context.Context, tx pgx.Tx, col *Collection, id strin
 
 // view builds the response for a row. Content is included only when the policy allows reading it.
 func (r *Records) view(ctx context.Context, tx pgx.Tx, c Ctx, col *Collection, rr *recordRow) (*Record, error) {
+	rec, err := r.contentView(ctx, tx, c, col, rr)
+	if err == nil && !rec.Withheld && !rec.Deleted {
+		rec.AttachmentID, err = r.visibleAttachment(ctx, tx, c, rr.attachmentID)
+	}
+	return rec, err
+}
+
+func (r *Records) contentView(ctx context.Context, tx pgx.Tx, c Ctx, col *Collection, rr *recordRow) (*Record, error) {
 	m, err := markings.Parse(rr.marking)
 	if err != nil {
 		return nil, errs.Integrity("stored marking is invalid")
@@ -793,8 +807,11 @@ func (r *Records) createTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, col
 		if err != nil {
 			return err
 		}
-		op := Operation{Type: "record.create", Target: coll, Marking: m.Banner(),
-			Payload: map[string]any{"data": in.Data, "visibility": vis, "team_id": team}}
+		payload := map[string]any{"data": in.Data, "visibility": vis, "team_id": team}
+		if in.AttachmentID != nil {
+			payload["attachment_id"] = *in.AttachmentID
+		}
+		op := Operation{Type: "record.create", Target: coll, Marking: m.Banner(), Payload: payload}
 		if rc, err := r.receipts.claim(ctx, tx, c, op, 0, ""); err != nil || rc != nil {
 			if rc != nil {
 				out, err = r.replay(ctx, tx, c, col, rc)
@@ -810,6 +827,10 @@ func (r *Records) createTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, col
 		if err := r.validate(col, in.Data); err != nil {
 			return err
 		}
+		attachment, err := r.attachmentForWrite(ctx, tx, c, c.Principal.Subject, nil, in.AttachmentID, m)
+		if err != nil {
+			return err
+		}
 		id := store.NewID("rec")
 		st, err := r.seal(ctx, tx, col, id, in.Data, m, 1)
 		if err != nil {
@@ -820,9 +841,9 @@ func (r *Records) createTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, col
 			return err
 		}
 		rr, err := scanRecord(tx.QueryRow(ctx, `INSERT INTO records (app, id, collection, marking, data_plain, data_sealed, key_id,
-			version, created_by, updated_by, owner, visibility, team_id, aad_version, schema_version)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$8,$8,$9,$10,2,$11) RETURNING `+recordCols,
-			c.App, id, col.Name, m.Banner(), st.plain, st.sealed, st.keyID, c.Principal.Subject, vis, team, col.Version))
+			version, created_by, updated_by, owner, visibility, team_id, aad_version, schema_version, attachment_id)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,$8,$8,$9,$10,2,$11,$12) RETURNING `+recordCols,
+			c.App, id, col.Name, m.Banner(), st.plain, st.sealed, st.keyID, c.Principal.Subject, vis, team, col.Version, attachment))
 		if err != nil {
 			return err
 		}
@@ -903,8 +924,11 @@ func (r *Records) updateTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, col
 		if in.Marking != nil {
 			marking = in.Marking.Banner()
 		}
-		op := Operation{Type: "record.update", Target: coll + "/" + id, ExpectedVersion: expectedVersion, Marking: marking,
-			Payload: map[string]any{"data": in.Data}}
+		payload := map[string]any{"data": in.Data}
+		if in.AttachmentID != nil {
+			payload["attachment_id"] = *in.AttachmentID
+		}
+		op := Operation{Type: "record.update", Target: coll + "/" + id, ExpectedVersion: expectedVersion, Marking: marking, Payload: payload}
 		if rc, err := r.receipts.claim(ctx, tx, c, op, 0, ""); err != nil || rc != nil {
 			if rc != nil {
 				out, err = r.replay(ctx, tx, c, col, rc)
@@ -936,6 +960,10 @@ func (r *Records) updateTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, col
 		if err := r.validate(col, in.Data); err != nil {
 			return err
 		}
+		attachment, err := r.attachmentForWrite(ctx, tx, c, rr.owner, rr.attachmentID, in.AttachmentID, m)
+		if err != nil {
+			return err
+		}
 		next := expectedVersion + 1
 		st, err := r.seal(ctx, tx, col, id, in.Data, m, next)
 		if err != nil {
@@ -947,9 +975,9 @@ func (r *Records) updateTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, col
 		}
 		// Compare-and-swap: concurrent writers serialize on the row lock and the loser's WHERE fails.
 		nr, err := scanRecord(tx.QueryRow(ctx, `UPDATE records SET marking=$5, data_plain=$6, data_sealed=$7, key_id=$8,
-			version=$9, aad_version=2, updated_by=$10, updated_at=now(), schema_version=$11
+			version=$9, aad_version=2, updated_by=$10, updated_at=now(), schema_version=$11, attachment_id=$12
 			WHERE app=$1 AND collection=$2 AND id=$3 AND version=$4 AND deleted_at IS NULL RETURNING `+recordCols,
-			c.App, col.Name, id, expectedVersion, m.Banner(), st.plain, st.sealed, st.keyID, next, c.Principal.Subject, col.Version))
+			c.App, col.Name, id, expectedVersion, m.Banner(), st.plain, st.sealed, st.keyID, next, c.Principal.Subject, col.Version, attachment))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errs.PreconditionFailed("record changed concurrently; it is no longer at version %d", expectedVersion)
 		}
@@ -1015,7 +1043,7 @@ func (r *Records) deleteTx(ctx context.Context, c Ctx, tx pgx.Tx, a *Access, col
 		}
 	} else {
 		nr, err := scanRecord(tx.QueryRow(ctx, `UPDATE records SET deleted_at=now(), version=version+1, data_plain=NULL,
-				data_sealed=NULL, key_id=NULL, updated_by=$5, updated_at=now()
+				data_sealed=NULL, key_id=NULL, attachment_id=NULL, updated_by=$5, updated_at=now()
 				WHERE app=$1 AND collection=$2 AND id=$3 AND version=$4 AND deleted_at IS NULL RETURNING `+recordCols,
 			c.App, col.Name, id, rr.version, c.Principal.Subject))
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -1119,14 +1147,26 @@ func (r *Records) Query(ctx context.Context, c Ctx, coll string, filters map[str
 		if more {
 			all = all[:n]
 		}
+		var ids []string
+		for _, rr := range all {
+			if rr.attachmentID != nil {
+				ids = append(ids, *rr.attachmentID)
+			}
+		}
+		visible, err := r.visibleAttachments(ctx, tx, c, ids)
+		if err != nil {
+			return err
+		}
 		withheld, bytes := 0, 0
 		for i, rr := range all {
-			rec, err := r.view(ctx, tx, c, col, rr)
+			rec, err := r.contentView(ctx, tx, c, col, rr)
 			if err != nil {
 				return err
 			}
 			if rec.Withheld {
 				withheld++
+			} else if rr.attachmentID != nil && visible[*rr.attachmentID] {
+				rec.AttachmentID = rr.attachmentID
 			}
 			size := len(rr.plain) + len(rr.sealed)
 			if i > 0 && bytes+size > r.MaxResponseBytes {

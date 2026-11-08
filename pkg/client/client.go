@@ -308,6 +308,7 @@ func (c *Client) Limits(ctx context.Context) (*Limits, error) {
 // ---- types ----------------------------------------------------------------------------------------
 
 type Record struct {
+	AttachmentID    *string        `json:"attachment_id,omitempty"`
 	ID              string         `json:"id"`
 	Collection      string         `json:"collection"`
 	Marking         string         `json:"marking"`
@@ -751,10 +752,11 @@ func (a *App) recordPath(coll, id string) string {
 
 // RecordInput is a record body. Visibility and TeamID apply on create.
 type RecordInput struct {
-	Data       map[string]any `json:"data"`
-	Marking    string         `json:"marking,omitempty"`
-	Visibility string         `json:"visibility,omitempty"`
-	TeamID     string         `json:"team_id,omitempty"`
+	AttachmentID *string        `json:"attachment_id,omitempty"`
+	Data         map[string]any `json:"data"`
+	Marking      string         `json:"marking,omitempty"`
+	Visibility   string         `json:"visibility,omitempty"`
+	TeamID       string         `json:"team_id,omitempty"`
 }
 
 func (a *App) CreateRecord(ctx context.Context, coll string, in RecordInput) (*Record, error) {

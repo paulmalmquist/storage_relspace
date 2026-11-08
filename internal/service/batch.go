@@ -93,7 +93,11 @@ func batchPayload(ops []BatchOperation) ([]map[string]any, error) {
 			if op.Record.Marking != nil {
 				banner = op.Record.Marking.Banner()
 			}
-			payload["record"] = map[string]any{"data": op.Record.Data, "marking": banner, "visibility": op.Record.Visibility, "team_id": op.Record.TeamID}
+			record := map[string]any{"data": op.Record.Data, "marking": banner, "visibility": op.Record.Visibility, "team_id": op.Record.TeamID}
+			if op.Record.AttachmentID != nil {
+				record["attachment_id"] = *op.Record.AttachmentID
+			}
+			payload["record"] = record
 		}
 		out[i] = payload
 	}

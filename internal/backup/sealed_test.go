@@ -25,7 +25,11 @@ func TestSealedExportRecoversPlainCollectionsWithoutPlaintextFiles(t *testing.T)
 		t.Fatal(err)
 	}
 	secret := "private-export-payload-marker-52989"
-	rec, err := src.C.Records.Create(ctx, eng, "plain", service.RecordInput{Data: map[string]any{"tag": secret, "payload": strings.Repeat(secret, 5000)}})
+	file, err := src.C.Blobs.Put(ctx, eng, []byte("linked content"), service.BlobInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := src.C.Records.Create(ctx, eng, "plain", service.RecordInput{AttachmentID: &file.ID, Data: map[string]any{"tag": secret, "payload": strings.Repeat(secret, 5000)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +75,7 @@ func TestSealedExportRecoversPlainCollectionsWithoutPlaintextFiles(t *testing.T)
 		t.Fatal(err)
 	}
 	got, err := dst.C.Records.Get(ctx, dst.Ctx(t, "engineer@rel.test"), "plain", rec.ID)
-	if err != nil || got.Data["tag"] != secret || got.Data["payload"] != strings.Repeat(secret, 5000) {
+	if err != nil || got.AttachmentID == nil || *got.AttachmentID != file.ID || got.Data["tag"] != secret || got.Data["payload"] != strings.Repeat(secret, 5000) {
 		t.Fatalf("restored plaintext collection: %+v %v", got, err)
 	}
 	v, err := dst.C.VerifyApp(ctx, testenv.App, true)

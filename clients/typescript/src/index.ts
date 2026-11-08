@@ -170,6 +170,8 @@ const enc = encodeURIComponent;
 const etag = (v: number) => `"v${v}"`;
 
 export interface RecordInput {
+  /** Set a managed blob link. Omit to preserve it on update, or pass "" to detach. */
+  attachment_id?: string;
   data: Record<string, unknown>;
   marking?: string;
   /** private (default) | team | app */

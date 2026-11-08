@@ -5103,6 +5103,10 @@
      },
      "team_id": {
       "type": "string"
+     },
+     "attachment_id": {
+      "type": "string",
+      "description": "Managed blob reference. Omit to preserve on update, or use an empty string to detach."
      }
     },
     "additionalProperties": false,
@@ -5192,6 +5196,10 @@
      "updated_at": {
       "type": "string",
       "format": "date-time"
+     },
+     "attachment_id": {
+      "type": "string",
+      "description": "Present only when the caller can read the active attachment."
      }
     },
     "additionalProperties": false,

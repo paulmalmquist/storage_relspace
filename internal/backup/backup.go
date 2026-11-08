@@ -600,6 +600,8 @@ func validateContent(dir string, m *Manifest, read readTable) (*Report, error) {
 	}
 	seen := map[string]bool{}
 	referenced := map[string]bool{}
+	type attachmentRef struct{ id, owner string }
+	links := map[attachmentRef]struct{}{}
 	for _, t := range m.Tables {
 		if !known[t.Name] {
 			rep.addf("table %s is not part of format_version %d", t.Name, FormatVersion)
@@ -626,6 +628,22 @@ func validateContent(dir string, m *Manifest, read readTable) (*Report, error) {
 			count++
 			if err := rowScope(t.Name, m.App, raw); err != nil {
 				return err
+			}
+			if t.Name == "records" {
+				var rec struct {
+					Attachment *string    `json:"attachment_id"`
+					Owner      string     `json:"owner"`
+					Deleted    *time.Time `json:"deleted_at"`
+				}
+				if err := json.Unmarshal(raw, &rec); err != nil {
+					return err
+				}
+				if rec.Attachment != nil {
+					if rec.Deleted != nil {
+						return errors.New("deleted record has an active attachment")
+					}
+					links[attachmentRef{*rec.Attachment, rec.Owner}] = struct{}{}
+				}
 			}
 			if t.Name == "blobs" || t.Name == "blob_parts" {
 				row, _ := decodeRow(raw)
@@ -716,6 +734,7 @@ func validateContent(dir string, m *Manifest, read readTable) (*Report, error) {
 	}
 	err = read("blobs", func(b []byte) error {
 		var bl struct {
+			Owner    string  `json:"owner"`
 			ID       string  `json:"id"`
 			App      string  `json:"app"`
 			State    string  `json:"state"`
@@ -733,6 +752,9 @@ func validateContent(dir string, m *Manifest, read readTable) (*Report, error) {
 		}
 		if bl.State != "active" && bl.State != "pending" {
 			return nil
+		}
+		if bl.State == "active" && bl.App == m.App {
+			delete(links, attachmentRef{bl.ID, bl.Owner})
 		}
 		if bl.Layout == "parts" {
 			if bl.PartSize <= 0 || bl.Declared < 0 {
@@ -781,6 +803,9 @@ func validateContent(dir string, m *Manifest, read readTable) (*Report, error) {
 	})
 	if err != nil {
 		return rep, err
+	}
+	if len(links) > 0 {
+		rep.addf("%d live attachment references have no matching active blob and owner", len(links))
 	}
 	return rep, nil
 }

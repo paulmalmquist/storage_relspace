@@ -790,6 +790,9 @@ func (b *Blobs) Delete(ctx context.Context, c Ctx, id string, shred bool) error 
 			wrapped_dek = CASE WHEN $3 THEN NULL ELSE wrapped_dek END, deleted_at = now(),
 			shredded_at = CASE WHEN $3 THEN now() ELSE NULL END
 			WHERE app = $1 AND id = $2 AND state = 'active'`, c.App, id, shred)
+		if attachmentConstraint(err) {
+			return errs.Conflict("attachment is in use")
+		}
 		if err != nil {
 			return err
 		}
