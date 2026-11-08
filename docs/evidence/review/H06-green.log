@@ -1,0 +1,17 @@
+=== RUN   TestExportValidateRestore
+--- PASS: TestExportValidateRestore (1.86s)
+=== RUN   TestValidateDetectsTampering
+--- PASS: TestValidateDetectsTampering (0.58s)
+=== RUN   TestReviewSharedRestoreCannotImportPlatformAdministrator
+    review_principals_test.go:22: restore refused: shared target requires every source principal to be pre-provisioned by its operator
+--- PASS: TestReviewSharedRestoreCannotImportPlatformAdministrator (0.87s)
+=== RUN   TestReviewSharedRestorePreservesTargetPrincipalPolicy
+--- PASS: TestReviewSharedRestorePreservesTargetPrincipalPolicy (0.54s)
+=== RUN   TestReviewRestoreRejectsForeignAppRows
+--- PASS: TestReviewRestoreRejectsForeignAppRows (0.47s)
+=== RUN   TestReviewRefusedRestoreDoesNotWriteObjects
+--- PASS: TestReviewRefusedRestoreDoesNotWriteObjects (0.48s)
+=== RUN   TestReviewValidateRejectsForeignObjectKey
+--- PASS: TestReviewValidateRejectsForeignObjectKey (0.55s)
+PASS
+ok  	github.com/paulmalmquist/storage_relspace/internal/backup	6.409s

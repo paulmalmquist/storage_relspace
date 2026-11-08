@@ -1,0 +1,6 @@
+=== RUN   TestReviewSharedRestoreCannotImportPlatformAdministrator
+    review_principals_test.go:29: restoring one app imported a platform administrator able to disable another app's operator
+--- FAIL: TestReviewSharedRestoreCannotImportPlatformAdministrator (0.77s)
+FAIL
+FAIL	github.com/paulmalmquist/storage_relspace/internal/backup	0.843s
+FAIL
