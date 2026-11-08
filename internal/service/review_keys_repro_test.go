@@ -72,3 +72,37 @@ func TestReviewConcurrentFirstReceiptsRemainReplayable(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewTrimmedReceiptNeverReturnsDifferentVersion(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	if _, err := env.C.Records.CreateCollection(ctx, env.Ctx(t, "admin@rel.test"), service.CollectionInput{Name: "short", Marking: cuiExpt, HistoryLimit: 1}); err != nil {
+		t.Fatal(err)
+	}
+	user := env.Ctx(t, "engineer@rel.test")
+	rec := must[*service.Record](t)(env.C.Records.Create(ctx, user, "short", in(`{"n":1}`)))
+	user.OpID = "review-original-update"
+	original := must[*service.Record](t)(env.C.Records.Update(ctx, user, "short", rec.ID, in(`{"n":2}`), 1))
+	later := user
+	later.OpID = "review-later-update"
+	must[*service.Record](t)(env.C.Records.Update(ctx, later, "short", rec.ID, in(`{"n":3}`), 2))
+	replay, err := env.C.Records.Update(ctx, user, "short", rec.ID, in(`{"n":2}`), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.Version != original.Version || replay.Data["n"] != original.Data["n"] {
+		t.Fatalf("receipt for version %d silently replayed version %d with data %v", original.Version, replay.Version, replay.Data)
+	}
+}
+
+func TestReviewBlobDeleteUsesReceipt(t *testing.T) {
+	env, ctx := testenv.New(t), context.Background()
+	user := env.Ctx(t, "engineer@rel.test")
+	blob := must[*service.BlobMeta](t)(env.C.Blobs.Put(ctx, user, []byte("delete once"), service.BlobInput{Marking: cuiExpt}))
+	user.OpID = "review-blob-delete"
+	if err := env.C.Blobs.Delete(ctx, user, blob.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.C.Blobs.Delete(ctx, user, blob.ID, false); err != nil {
+		t.Fatalf("blob delete ignores its operation ID; retry returned %v", err)
+	}
+}
