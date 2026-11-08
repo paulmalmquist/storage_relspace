@@ -316,6 +316,11 @@ func (b *Blobs) PutPart(ctx context.Context, c Ctx, id string, n int, body io.Re
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrCommitUnknown) {
+			// The part row may already reference this key. Deleting the object
+			// here would turn a lost acknowledgement into permanent data loss.
+			return 0, b.settle(ctx, err)
+		}
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 		_ = b.backend.Delete(cleanup, key)

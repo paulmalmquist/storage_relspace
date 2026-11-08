@@ -130,6 +130,9 @@ func (k *Core) settle(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, store.ErrCommitUnknown) {
+		return errs.Unavailable("transaction outcome unknown; resolve the operation before retrying").Wrap(err)
+	}
 	var ae *auditedError
 	if errors.As(err, &ae) {
 		if aerr := k.Audit.Standalone(ctx, ae.entry); aerr != nil {

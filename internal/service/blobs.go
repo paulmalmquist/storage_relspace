@@ -409,6 +409,11 @@ func (u *Upload) Commit() (*BlobMeta, error) {
 		return err
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrCommitUnknown) {
+			// The active row may have committed. Keep its ciphertext; the client
+			// resolves the outcome through its receipt, or pending-lease cleanup.
+			return nil, err
+		}
 		// This attempt lost (or could not finish): remove its object now, and durably via the outbox.
 		_ = u.svc.backend.Delete(ctx, u.storageKey)
 		_ = u.svc.DB.Run(ctx, u.c.scope(), func(tx pgx.Tx) error { return u.svc.abortPending(ctx, tx, u.c.App, u.ID, u.lease) })
