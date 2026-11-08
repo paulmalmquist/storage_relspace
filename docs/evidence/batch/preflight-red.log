@@ -1,0 +1,6 @@
+=== RUN   TestBatchChecksClassificationBeforeWaitingOnHiddenRows
+    batch_test.go:282: want not_found, got timeout: context deadline exceeded
+--- FAIL: TestBatchChecksClassificationBeforeWaitingOnHiddenRows (0.92s)
+FAIL
+FAIL	github.com/paulmalmquist/storage_relspace/internal/service	1.002s
+FAIL

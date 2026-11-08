@@ -1,0 +1,29 @@
+{
+  "base": "d4523938f867efce95e6c04073657238208d3fa2",
+  "integration_required": true,
+  "race": true,
+  "go": "1.26.10",
+  "postgresql": "16.15",
+  "node": "22.18.0",
+  "runs": {
+    "enforced-fips": {
+      "test_results": 216,
+      "top_level": 207,
+      "failures": 0,
+      "skipped_tests": 0
+    },
+    "frozen-v1.0.0": {
+      "test_results": 216,
+      "top_level": 207,
+      "failures": 0,
+      "skipped_tests": 0
+    }
+  },
+  "typescript": {
+    "live_tests_passed": 10,
+    "skipped": 0,
+    "typecheck": "pass",
+    "generated_types": "match",
+    "example": "pass"
+  }
+}

@@ -1,0 +1,107 @@
+NOTICE:  database "strongbox_contract" does not exist, skipping
+created local keyring /tmp/tmp.kHf7xF4zMn/keyring.json (development only)
+schema ready
+principal alice@example.com saved
+principal bob@example.com saved
+principal carol@example.com saved
+
+> @strongbox/client@0.3.0 generate
+> openapi-typescript ../../internal/api/openapi.json -o src/schema.d.ts
+
+✨ openapi-typescript 7.13.0
+🚀 ../../internal/api/openapi.json → src/schema.d.ts [295.7ms]
+
+> @strongbox/client@0.3.0 check-generated
+> openapi-typescript ../../internal/api/openapi.json -o /tmp/strongbox-schema.d.ts && diff -u src/schema.d.ts /tmp/strongbox-schema.d.ts
+
+✨ openapi-typescript 7.13.0
+🚀 ../../internal/api/openapi.json → /tmp/strongbox-schema.d.ts [233.2ms]
+
+> @strongbox/client@0.3.0 typecheck
+> tsc --noEmit
+
+
+> @strongbox/client@0.3.0 test
+> node --test test/*.test.ts
+
+TAP version 13
+# Subtest: private state, team sharing, conflict recovery and undo
+ok 1 - private state, team sharing, conflict recovery and undo
+  ---
+  duration_ms: 394.930057
+  type: 'test'
+  ...
+# Subtest: a lost response is recovered with the same operation ID
+ok 2 - a lost response is recovered with the same operation ID
+  ---
+  duration_ms: 79.243041
+  type: 'test'
+  ...
+# Subtest: blobs: one request and an upload session
+ok 3 - blobs: one request and an upload session
+  ---
+  duration_ms: 380.623395
+  type: 'test'
+  ...
+# Subtest: atomic batches retain one outcome and roll back every conflicting write
+ok 4 - atomic batches retain one outcome and roll back every conflicting write
+  ---
+  duration_ms: 153.786988
+  type: 'test'
+  ...
+# Subtest: a mutation is retried with the same operation ID after 503 and a lost connection
+ok 5 - a mutation is retried with the same operation ID after 503 and a lost connection
+  ---
+  duration_ms: 489.129606
+  type: 'test'
+  ...
+# Subtest: conflicts are not retried and surface as typed errors
+ok 6 - conflicts are not retried and surface as typed errors
+  ---
+  duration_ms: 1.726956
+  type: 'test'
+  ...
+# Subtest: retries are bounded
+ok 7 - retries are bounded
+  ---
+  duration_ms: 552.542116
+  type: 'test'
+  ...
+# Subtest: mutate re-reads and re-applies after a conflict
+ok 8 - mutate re-reads and re-applies after a conflict
+  ---
+  duration_ms: 2.441995
+  type: 'test'
+  ...
+# Subtest: an aborted call stops waiting
+ok 9 - an aborted call stops waiting
+  ---
+  duration_ms: 0.846127
+  type: 'test'
+  ...
+# Subtest: workload credentials refuse to run in a browser
+ok 10 - workload credentials refuse to run in a browser
+  ---
+  duration_ms: 0.207152
+  type: 'test'
+  ...
+1..10
+# tests 10
+# suites 0
+# pass 10
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1204.564244
+
+> @strongbox/client@0.3.0 example
+> node examples/demo.ts
+
+alice saved rec_483f4a4b99121c90bdca1916688f0ffe (v1, private, CUI//SP-EXPT)
+bob cannot see it: private by default
+shared with team ops-notes_mw784vjx -> { items: [ 'fuel' ], title: 'Launch checklist' }
+alice's stale write was refused: record is at version 2, not 1
+merged v3: [ 'fuel', 'weather', 'range' ]
+undo to v2 wrote v4: [ 'fuel', 'weather' ]
+history: v4 restore, v3 update, v2 update, v1 create

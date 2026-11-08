@@ -30,7 +30,7 @@ flowchart LR
 |---|---|
 | **Isolation** | Every row belongs to one app (`<app_id>:<env>`). A request names an app; membership grants access. Cross-app references are impossible by foreign key, and RLS refuses rows outside the app even if service code forgot a filter. |
 | **Sharing** | Private by default. Records and blobs can be shared with a team, the whole app, or individuals (viewer/editor, optional re-share). Sharing is separate from editing; markings and clearances still apply. |
-| **Predictable saves** | Compare-and-swap updates (`If-Match`), operation IDs that make retries safe (a lost response returns the original result), history with undo, audit in the same transaction. |
+| **Predictable saves** | Compare-and-swap writes (`If-Match`), bounded atomic record batches, operation IDs that make retries safe (a lost response returns the original result), history with undo, audit in the same transaction. |
 | **Contracts** | Versioned JSON Schema per collection with indexed and unique fields. Compatible changes apply at once; others run a resumable migration job that validates every record before the switch. |
 | **Attachments** | Encrypted blobs: one request up to 16 MiB, resumable upload sessions up to 5 GiB. |
 | **Budgets** | Per-app quotas enforced in the database, per-app and per-user rate limits, a per-app share of the connection pool, bounded pages and responses. |
@@ -86,6 +86,7 @@ build, and `serve` refuses a database login that could bypass row-level security
 |---|---|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | App model, trust boundary, roles and RLS, disclosure and revocation rules, encryption contexts, receipts, audit, outbox |
 | [SECURITY.md](docs/SECURITY.md) | NIST SP 800-171 mapping, threat model, deployment checklist |
+| [ATOMIC_RECORD_SAVES.md](docs/ATOMIC_RECORD_SAVES.md) | Atomic record batches, version checks, limits and retry behavior |
 | [RECOVERY_AND_RECONCILIATION.md](docs/RECOVERY_AND_RECONCILIATION.md) | Sealed backups, recovery drills and scoped cleanup |
 | [OPERATIONS.md](docs/OPERATIONS.md) | Deployment, migrations, budgets, keys and KMS failure, worker, metrics, export and restore |
 | [RETENTION.md](docs/RETENTION.md) | What delete, purge, shred, history expiry and backup expiry each remove |

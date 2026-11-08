@@ -217,3 +217,10 @@ Application `/usage` counts are caller-visible, labelled `scope: visible`; opera
 still app-wide. Detailed migration status requires app admin plus `apps:operate` and collection-wide
 classification clearance. Cancellation returns redacted counts/failures. Clients must send
 operation IDs for all app mutations and `If-Match` for record deletion; regenerate OpenAPI clients.
+
+
+### Atomic saves (migration 11)
+
+Apply migration 11 before enabling record batches. It extends receipt history pins to batch
+outcomes. Rates count ordinary requests as one work unit and batches as one per command; the
+configured burst should accommodate the intended batch size. See [atomic saves](ATOMIC_RECORD_SAVES.md).

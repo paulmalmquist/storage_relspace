@@ -360,3 +360,12 @@ store, so self-hosted Supabase can serve as the substrate, with three rules:
 - **Migrations:** add numbered files to `internal/store/migrations/`. `strongbox init` applies
   pending ones in order under an advisory lock, as the migration login. Migrations are additive;
   `serve` refuses to run against a schema older than the build.
+
+
+## Atomic record batches
+
+The batch endpoint reuses the transaction-local implementations of record create/update/delete/
+restore under one DB.Run transaction and one operation receipt. Every existing target has a CAS
+version; receipt replay checks every resource. The bound is 25 commands, 1 MiB and a ten-second
+execution budget, with normal bounded transaction settlement. Each command costs one rate unit.
+See [the batch contract and evidence](ATOMIC_RECORD_SAVES.md).
