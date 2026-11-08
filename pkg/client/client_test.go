@@ -321,3 +321,41 @@ func TestContractChangeThroughSDK(t *testing.T) {
 		t.Fatalf("stale contract change: %v", err)
 	}
 }
+
+func TestAtomicBatchThroughSDK(t *testing.T) {
+	h, ctx := newHarness(t), context.Background()
+	adm, eng := h.app(t, "admin@rel.test"), h.app(t, "engineer@rel.test")
+	if _, err := adm.CreateCollection(ctx, client.CollectionSpec{Name: "notes", Marking: "UNCONTROLLED"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := eng.CreateRecord(ctx, "notes", client.RecordInput{Data: map[string]any{"tag": "one"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := eng.CreateRecord(ctx, "notes", client.RecordInput{Data: map[string]any{"tag": "two"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := []client.BatchOperation{
+		{Type: "update", Collection: "notes", ID: first.ID, ExpectedVersion: 1, Record: &client.RecordInput{Data: map[string]any{"tag": "a"}}},
+		{Type: "update", Collection: "notes", ID: second.ID, ExpectedVersion: 1, Record: &client.RecordInput{Data: map[string]any{"tag": "b"}}},
+	}
+	call := client.WithOperationID(ctx, "sdk-batch-operation")
+	result, err := eng.Batch(call, changes)
+	if err != nil || len(result.Operations) != 2 || result.Operations[0].Version != 2 {
+		t.Fatalf("batch %+v %v", result, err)
+	}
+	retry, err := eng.Batch(call, changes)
+	if err != nil || !retry.Replayed {
+		t.Fatalf("batch retry %+v %v", retry, err)
+	}
+	changes[0].ExpectedVersion = 2
+	changes[1].ExpectedVersion = 1
+	if _, err := eng.Batch(ctx, changes); !client.IsConflict(err) {
+		t.Fatalf("wanted a version conflict, got %v", err)
+	}
+	fresh, err := eng.GetRecord(ctx, "notes", first.ID)
+	if err != nil || fresh.Version != 2 {
+		t.Fatalf("partial batch through SDK: %+v %v", fresh, err)
+	}
+}

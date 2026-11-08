@@ -255,6 +255,7 @@ func (a *Auditing) Record(ctx context.Context, e audit.Entry) error {
 // Limits are the request limits this deployment enforces, advertised at GET /v1/limits.
 func (c *Container) Limits() map[string]any {
 	return map[string]any{
+		"max_batch_operations": MaxBatchOperations, "max_batch_bytes": MaxBatchBytes, "batch_timeout_ms": BatchTimeout.Milliseconds(),
 		"max_single_upload_bytes": c.Blobs.MaxBytes,
 		"max_blob_bytes":          c.Blobs.MaxBlob,
 		"upload_session": map[string]any{

@@ -252,6 +252,8 @@ func (r *receipts) authorize(ctx context.Context, tx pgx.Tx, c Ctx, rc *Receipt)
 	var err error
 	action := auth.RecordRead
 	switch rc.ResourceType {
+	case "record_batch":
+		return r.authorizeBatch(ctx, tx, c, rc)
 	case "record":
 		err = tx.QueryRow(ctx, `SELECT marking, deleted_at IS NOT NULL, sb_can_manage(owner, visibility, team_id), sb_can_share('record',id,owner,visibility,team_id)
 			FROM records WHERE app=$1 AND id=$2`, c.App, rc.ResourceID).Scan(&banner, &restricted, &manages, &canShare)

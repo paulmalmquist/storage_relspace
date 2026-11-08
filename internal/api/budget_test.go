@@ -69,3 +69,21 @@ func TestBudgets(t *testing.T) {
 		t.Fatalf("%d of 50 auth failures written to the chain; want the burst of 20", audited)
 	}
 }
+
+func TestBatchChargesWorkWithoutTakingAnotherFlightSlot(t *testing.T) {
+	b := newBudget(&config.Config{RateSubjectPerSecond: 1, RateSubjectBurst: 3, RateAppPerSecond: 100, RateAppBurst: 5, MaxInFlightPerApp: 1})
+	release, err := b.admit("notes:test", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if err := b.charge("notes:test", "alice", 2); err != nil {
+		t.Fatal("work charging took another in-flight slot", err)
+	}
+	if err := b.charge("notes:test", "alice", 1); err == nil {
+		t.Fatal("batch bypassed subject budget")
+	}
+	if _, err := b.admit("notes:test", "bob"); err == nil {
+		t.Fatal("in-flight cap was lost")
+	}
+}

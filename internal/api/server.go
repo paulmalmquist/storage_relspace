@@ -87,6 +87,7 @@ func (s *Server) table() map[string]handler {
 		"PUT /v1/principals/{subject}":                             s.putPrincipal,
 		"GET /v1/audit/events":                                     s.auditEvents,
 		"GET /v1/audit/verify":                                     s.auditVerify,
+		"POST " + a + "/records/batch":                             s.app(s.batchRecords),
 		"GET " + a:                                                 s.app(s.getApp),
 		"GET " + a + "/members":                                    s.app(s.listMembers),
 		"PUT " + a + "/members/{subject}":                          s.app(s.putMember),

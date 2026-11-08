@@ -283,6 +283,9 @@ func (c *Client) WhoAmI(ctx context.Context) (map[string]any, error) {
 
 // Limits are the server's request limits.
 type Limits struct {
+	MaxBatchOperations   int    `json:"max_batch_operations"`
+	MaxBatchBytes        int64  `json:"max_batch_bytes"`
+	BatchTimeoutMS       int64  `json:"batch_timeout_ms"`
 	MaxSingleUploadBytes int64  `json:"max_single_upload_bytes"`
 	MaxBlobBytes         int64  `json:"max_blob_bytes"`
 	MaxBlobMetadataBytes int    `json:"max_blob_metadata_bytes"`
@@ -893,4 +896,33 @@ func (a *App) Grant(ctx context.Context, coll, id string, g GrantInput) (*Grant,
 
 func (a *App) Revoke(ctx context.Context, coll, id, grantID string) error {
 	return a.c.do(ctx, request{method: "DELETE", path: a.resourcePath(coll, id) + "/grants/" + url.PathEscape(grantID)}, nil)
+}
+
+// BatchOperation changes one record. Create needs Record; all other commands need ID and
+// ExpectedVersion. Restore additionally needs RestoreVersion. No app can be selected in an item.
+type BatchOperation struct {
+	Type            string       `json:"type"`
+	Collection      string       `json:"collection"`
+	ID              string       `json:"id,omitempty"`
+	ExpectedVersion int          `json:"expected_version,omitempty"`
+	RestoreVersion  int          `json:"restore_version,omitempty"`
+	Record          *RecordInput `json:"record,omitempty"`
+}
+type BatchOutcome struct {
+	Type       string `json:"type"`
+	Collection string `json:"collection"`
+	ID         string `json:"id"`
+	Version    int    `json:"version"`
+	Marking    string `json:"marking"`
+}
+type BatchResult struct {
+	Operations []BatchOutcome `json:"operations"`
+	Marking    string         `json:"marking"`
+	Replayed   bool           `json:"replayed"`
+}
+
+// Batch saves 1-25 record operations in one transaction and returns their metadata, not content.
+func (a *App) Batch(ctx context.Context, operations []BatchOperation) (*BatchResult, error) {
+	var out BatchResult
+	return &out, a.c.do(ctx, request{method: "POST", path: a.base + "/records/batch", body: jsonBody(map[string]any{"operations": operations}), headers: jsonHeaders("Idempotency-Key", operationID(ctx))}, &out)
 }

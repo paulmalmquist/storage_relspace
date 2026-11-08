@@ -75,3 +75,22 @@ test("blobs: one request and an upload session", { skip }, async () => {
   const u = await alice.usage();
   assert.ok(u.blobs >= 2 && u.reserved_bytes === 0);
 });
+
+test("atomic batches retain one outcome and roll back every conflicting write", { skip }, async () => {
+  const alice = as("ALICE"), name = `${coll}_batch`;
+  await alice.createCollection({ name, marking: "CUI//SP-EXPT" });
+  const one = await alice.createRecord(name, {data:{n:1}});
+  const two = await alice.createRecord(name, {data:{n:2}});
+  const operations: Parameters<typeof alice.batch>[0] = [
+    {type:"update",collection:name,id:one.id,expected_version:1,record:{data:{n:11}}},
+    {type:"update",collection:name,id:two.id,expected_version:1,record:{data:{n:22}}},
+  ];
+  const operationId = newOperationId();
+  const result = await alice.batch(operations,{operationId});
+  assert.deepEqual(result.operations.map(o=>o.version),[2,2]);
+  assert.equal(result.marking,"CUI//SP-EXPT");
+  assert.equal((await alice.batch(operations,{operationId})).replayed,true);
+  await assert.rejects(alice.batch([{...operations[0]!,expected_version:2},operations[1]!]),isConflict);
+  assert.equal((await alice.getRecord(name,one.id)).version,2);
+  assert.equal((await alice.operation(operationId)).status,"succeeded");
+});

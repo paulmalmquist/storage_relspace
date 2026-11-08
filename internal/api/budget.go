@@ -89,17 +89,29 @@ func (b *budget) admit(app, subject string) (func(), error) {
 			})
 		}
 	}
+	if err := b.charge(app, subject, 1); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
+// charge reserves work units without reserving another in-flight slot. Batches charge one unit
+// per operation, including the request unit already charged by admit.
+func (b *budget) charge(app, subject string, n int) error {
+	if b == nil || n <= 0 {
+		return nil
+	}
 	now := time.Now()
 	var taken []*rate.Reservation
-	refuse := func(d time.Duration) (func(), error) {
+	refuse := func(d time.Duration) error {
 		for _, r := range taken {
 			r.CancelAt(now)
 		}
-		release()
-		return nil, retryAfter(d)
+		return retryAfter(d)
 	}
 	if b.appRate > 0 {
-		r := limiter(b.apps, app, b.appRate, b.appBurst).ReserveN(now, 1)
+		r := limiter(b.apps, app, b.appRate, b.appBurst).ReserveN(now, n)
 		if !r.OK() {
 			return refuse(time.Second)
 		}
@@ -109,7 +121,7 @@ func (b *budget) admit(app, subject string) (func(), error) {
 		}
 	}
 	if b.subjectRate > 0 {
-		r := limiter(b.subjects, app+"\x00"+subject, b.subjectRate, b.subjectBurst).ReserveN(now, 1)
+		r := limiter(b.subjects, app+"\x00"+subject, b.subjectRate, b.subjectBurst).ReserveN(now, n)
 		if !r.OK() {
 			return refuse(time.Second)
 		}
@@ -118,7 +130,7 @@ func (b *budget) admit(app, subject string) (func(), error) {
 			return refuse(d)
 		}
 	}
-	return release, nil
+	return nil
 }
 
 // auditAuthFailure reports whether an authentication failure from this client address should be

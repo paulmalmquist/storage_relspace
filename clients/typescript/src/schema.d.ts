@@ -724,6 +724,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/apps/{app}/records/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save up to 25 record changes atomically
+         * @description One app, one operation ID and transaction. Body limit 1 MiB; service deadline 10 seconds. Charges one rate-limit work unit per operation. Returns IDs/versions/markings only. Retry/status is re-authorized for every affected record.
+         */
+        post: operations["batchRecords"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -767,6 +787,12 @@ export interface components {
             max_page: number;
             chunk_size?: number;
             app_env?: string;
+            /** @description Current hard limit: 25 */
+            max_batch_operations?: number;
+            /** @description Current hard limit: 1048576 */
+            max_batch_bytes?: number;
+            /** @description Current hard limit: 10000 */
+            batch_timeout_ms?: number;
         } & {
             [key: string]: unknown;
         };
@@ -1171,6 +1197,31 @@ export interface components {
         };
         RestoreIn: {
             version: number;
+        };
+        /** @description Create requires record and no ID/version. Update/delete/restore require ID and expected_version. Update requires record; restore requires restore_version. Only one operation per existing record; no sharing changes or hard purge. */
+        BatchOperation: {
+            /** @enum {string} */
+            type: "create" | "update" | "delete" | "restore";
+            collection: string;
+            id?: string;
+            expected_version?: number;
+            restore_version?: number;
+            record?: components["schemas"]["RecordIn"];
+        };
+        BatchIn: {
+            operations: components["schemas"]["BatchOperation"][];
+        };
+        BatchOutcome: {
+            type: string;
+            collection: string;
+            id: string;
+            version: number;
+            marking: string;
+        };
+        BatchResult: {
+            operations: components["schemas"]["BatchOutcome"][];
+            marking: string;
+            replayed: boolean;
         };
     };
     responses: {
@@ -3319,6 +3370,110 @@ export interface operations {
             422: components["responses"]["Invalid"];
             429: components["responses"]["TooMany"];
             503: components["responses"]["Unavailable"];
+        };
+    };
+    batchRecords: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Client operation ID (8-128 chars). Retrying with the same ID returns the original result; reusing it for a different operation is 409. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description User token when a registered app client acts for a member; access is the intersection of both. */
+                "X-On-Behalf-Of"?: components["parameters"]["OnBehalfOf"];
+            };
+            path: {
+                /** @description App identifier. The deployment fixes the environment; naming an app selects it and grants nothing. */
+                app: components["parameters"]["app"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchIn"];
+            };
+        };
+        responses: {
+            /** @description Atomic metadata outcome, or the same re-authorized receipt on retry */
+            200: {
+                headers: {
+                    /** @description Combined marking of every saved outcome */
+                    "X-Strongbox-Marking"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchResult"];
+                };
+            };
+            /** @description Visible resource but mutation permission is absent; entire batch rolled back */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A resource is missing or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Uniqueness conflict or operation ID reuse */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A version does not match; the entire batch rolled back */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Batch exceeds 1 MiB */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid batch; the entire batch rolled back */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An existing record has no expected_version */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Work-unit rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Retryable transaction or dependency failure */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description App quota exceeded; the entire batch rolled back */
+            507: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
 }

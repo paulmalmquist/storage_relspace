@@ -229,6 +229,11 @@ export class App {
     return this.#req<unknown>({ method: "PUT", path: `${this.base}/teams/${enc(team)}/members/${enc(subject)}`, json: { role }, headers:this.#mut(o), signal: o.signal });
   }
 
+  /** Save 1-25 record commands atomically. Returns only IDs, versions and markings. */
+  batch(operations: S["BatchOperation"][], o: CallOptions = {}) {
+    return this.#req<S["BatchResult"]>({method:"POST",path:`${this.base}/records/batch`,json:{operations},headers:this.#mut(o),signal:o.signal});
+  }
+
   // ---- collections ----
   createCollection(spec: S["CollectionIn"], o: CallOptions = {}) {
     return this.#req<Collection>({ method: "POST", path: `${this.base}/collections`, json: spec, headers: this.#mut(o), signal: o.signal });
