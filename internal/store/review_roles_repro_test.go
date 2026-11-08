@@ -1,5 +1,3 @@
-//go:build strongbox_review_repro
-
 package store_test
 
 import (

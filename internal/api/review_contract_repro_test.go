@@ -1,5 +1,3 @@
-//go:build strongbox_review_repro
-
 package api_test
 
 import (
@@ -18,7 +16,7 @@ import (
 
 func TestReviewMutationsRequireOperationID(t *testing.T) {
 	_, c := setup(t)
-	r := c.do("POST", app+"/collections", strings.NewReader(ncrBody), as(t, "admin@rel.test"))
+	r := c.do("POST", app+"/collections", strings.NewReader(ncrBody), map[string]string{"Authorization": "Bearer " + testenv.Token(t, "admin@rel.test")})
 	if r.status >= 200 && r.status < 300 {
 		t.Fatalf("collection mutation without Idempotency-Key succeeded: %d", r.status)
 	}

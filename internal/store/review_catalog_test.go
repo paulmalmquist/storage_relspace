@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -61,7 +62,8 @@ func TestReviewAllAppTablesForceRLSAndDefinersPinPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(defs) != 3 {
+	slices.Sort(defs)
+	if !slices.Equal(defs, []string{"sb_blob_usage", "sb_can_share_id", "sb_catalog_marking", "sb_record_usage", "sb_revision_pinned", "sb_set_visibility"}) {
 		t.Fatalf("unexpected definer set: %v; review new functions explicitly", defs)
 	}
 }

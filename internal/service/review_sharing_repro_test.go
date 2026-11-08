@@ -1,5 +1,3 @@
-//go:build strongbox_review_repro
-
 package service_test
 
 import (
@@ -20,6 +18,11 @@ func TestReviewShareOnlyGranteeCanChangeVisibility(t *testing.T) {
 		t.Fatalf("share permission refused: %v", err)
 	}
 	got := must[*service.Record](t)(env.C.Records.Get(ctx, owner, "notes", rec.ID))
+	// A share-only grant must not become edit or delegation permission.
+	_, err := env.C.Records.Update(ctx, mate, "notes", rec.ID, in(`{"tag":"changed"}`), 1)
+	wantCode(t, err, "forbidden")
+	_, err = env.C.Sharing.AddGrant(ctx, mate, ref, service.GrantInput{Subject: "intern@rel.test", Role: "viewer", CanShare: true})
+	wantCode(t, err, "forbidden")
 	if got.Visibility != "app" {
 		t.Fatalf("SetVisibility returned success but left visibility=%s", got.Visibility)
 	}
